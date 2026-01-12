@@ -1,11 +1,11 @@
 
-name: Build BlissOS 17 (Surface i1135G7 Final Fix)
+name: Build BlissOS 17 (Surface i1135G7 Final)
 
 on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: '源码地址'
+        description: '源码地址 (必须填写完整地址)'
         required: true
         default: 'github.com'
       prune_repo:
@@ -19,14 +19,14 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 1. 极大化磁盘空间
+      - name: 1. 深度清理磁盘空间
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
           android: true
           dotnet: true
 
-      - name: 2. 安装工具链与修复 Repo (2026 稳定版)
+      - name: 2. 安装 AOSP 2026 工具链 (修复 Repo 下载)
         run: |
           set -euo pipefail
           sudo apt update
@@ -36,23 +36,13 @@ jobs:
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
           
-          # 创建 bin 目录
           mkdir -p "$HOME/bin"
-          
-          # 【核心修复】：直接从官方最新仓库下载真正的脚本，增加 -L 处理重定向
+          # 使用 RAW 地址，防止下载到 HTML 网页
           curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
-          
-          # 鲁棒性检查：如果文件开头是 < 或 { 符号，说明下载到了网页或 JSON 错误，立即报错不再运行
-          if head -c 5 "$HOME/bin/repo" | grep -q "<"; then
-             echo "错误：下载到了网页而非脚本！正在尝试备用方案..."
-             # 备用方案：使用 apt 直接安装（如果仓库支持）或从镜像拉取
-             sudo apt-get install repo -y || (curl -fsSL mirrors.tuna.tsinghua.edu.cn > "$HOME/bin/repo")
-          fi
-          
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 3. 源码同步
+      - name: 3. 源码同步 (极简 Intel 模式)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
@@ -60,40 +50,41 @@ jobs:
           git config --global user.name "Builder"
           
           # 初始化与同步
-          /usr/bin/repo init -u "${{ github.event.inputs.manifest_url }}" -b bliss-v17.x --depth=1
-          /usr/bin/repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+          repo init -u "${{ github.event.inputs.manifest_url }}" -b bliss-v17.x --depth=1
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 4. 释放空间 (免费版必须执行)
+      - name: 4. 空间释放与驱动优化
         run: |
           cd build_dir
+          # 删除无关代码
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
+          # 清理 .repo (由输入参数决定)
           if [[ "${{ github.event.inputs.prune_repo }}" == "true" ]]; then
             rm -rf .repo
           fi
 
-      - name: 5. 针对 i1135G7 执行专项优化编译
+      - name: 5. 针对 i1135G7 (Tiger Lake) 执行专项编译
         run: |
           set -euo pipefail
           cd build_dir
           source build/envsetup.sh
           
-          # 针对 Tiger Lake (1135G7) 指令集优化
+          # 针对 i1135G7 Iris Xe 显卡与 Surface 适配
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           export TARGET_ENABLE_HOUDINI=true
           export TARGET_ENABLE_HOUDINI_64=true
-          # 解决 Surface 11代 CPU 闪屏的必加参数
+          # 修复 Surface 11代 CPU 闪屏问题的内核参数
           export BOARD_KERNEL_CMDLINE="i915.enable_psr=0 intel_pstate=passive"
           
           lunch bliss_x86_64-userdebug
           mka iso_img -j4
 
-      - name: 6. 上传 ISO
+      - name: 6. 上传 ISO 镜像
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
-          retention-days: 1
