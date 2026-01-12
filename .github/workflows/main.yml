@@ -1,3 +1,4 @@
+
 name: Build BlissOS 17 (Surface i1135G7 2026-Final)
 
 on:
@@ -64,7 +65,7 @@ jobs:
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (2026 容错增强版：排除故障仓库)
+      - name: 4. 源码同步 (2026 自动识别排除修复版)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
@@ -76,15 +77,20 @@ jobs:
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
           repo init -u "$MANIFEST_URL" -b master --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm
           
-          # 【核心修复】：显式移除报错的 vendor/prebuilts 仓库
+          # 【核心修复】：动态检测并排除报错的 vendor/prebuilts 仓库
+          # 使用 repo list 自动获取该项目在当前 Manifest 中的真实名称，防止 remove-project 因名不对而秒报错
           mkdir -p .repo/local_manifests
-          cat <<EOF > .repo/local_manifests/remove_broken.xml
-          <?xml version="1.0" encoding="UTF-8"?>
-          <manifest>
-            <remove-project name="platform/vendor/prebuilts" />
-            <remove-project name="vendor/prebuilts" />
-          </manifest>
-          EOF
+          echo '<?xml version="1.0" encoding="UTF-8"?><manifest>' > .repo/local_manifests/remove_broken.xml
+          
+          # 自动获取清单中所有匹配 vendor/prebuilts 的项目并加入移除列表
+          REAL_PROJ_NAME=$(repo list -n | grep "vendor/prebuilts" || true)
+          if [ ! -z "$REAL_PROJ_NAME" ]; then
+            for proj in $REAL_PROJ_NAME; do
+              echo "  <remove-project name=\"$proj\" />" >> .repo/local_manifests/remove_broken.xml
+              echo "检测到并自动排除项目: $proj"
+            done
+          fi
+          echo '</manifest>' >> .repo/local_manifests/remove_broken.xml
           
           # 清理锁文件并强制同步
           find .repo -name "*.lock" -delete || true
