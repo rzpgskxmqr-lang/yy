@@ -1,0 +1,101 @@
+name: Build BlissOS 17 (Intel/Surface Only - Space Optimized)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. 极限腾出磁盘空间
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      - name: 2. 安装编译环境
+        run: |
+          sudo apt update
+          sudo apt install -y bc bison build-essential ccache curl flex g++-multilib \
+            gcc-multilib git git-lfs gnupg gperf lib32readline-dev lib32z1-dev \
+            libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
+            lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 openjdk-17-jdk
+          
+          mkdir -p ~/bin
+          curl storage.googleapis.com > ~/bin/repo
+          chmod a+x ~/bin/repo
+          sudo ln -sf ~/bin/repo /usr/bin/repo
+
+      - name: 3. 源码瘦身同步 (剔除非 Intel 相关)
+        run: |
+          mkdir build_dir && cd build_dir
+          git config --global user.email "build@bliss.com"
+          git config --global user.name "Builder"
+          
+          # 初始化仓库，使用 --depth=1 减少历史记录
+          repo init -u github.com -b bliss-v17.x --depth=1
+          
+          # 同步源码
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+          
+          # 【核心优化】去除非 Intel/Surface 的冗余代码
+          # 删除 AMD 相关驱动和适配
+          rm -rf device/generic/amd*
+          rm -rf vendor/amd
+          # 删除其他非 Surface 的移动设备适配 (如一加、三星等可能存在的厂商库)
+          rm -rf device/google/atv
+          rm -rf device/amlogic
+          # 删除不使用的内核源码（只保留我们要编译的 x86_64 路径）
+          find kernel -mindepth 1 -maxdepth 1 -not -name "x86*" -exec rm -rf {} +
+
+      - name: 4. 集成 Surface 与 Intel Houdini
+        run: |
+          cd build_dir
+          # 仅拉取 Android 14 适用的 Houdini 兼容层
+          git clone github.com -b bliss-v17.x vendor/intel/houdini --depth=1
+          
+          # 预设 1135G7 与 Surface 专项变量
+          echo "TARGET_CPU_VARIANT=tigerlake" >> $GITHUB_ENV
+          echo "BOARD_GPU_DRIVERS=iris" >> $GITHUB_ENV
+          echo "TARGET_SURFACE=true" >> $GITHUB_ENV
+          echo "BLISS_BUILD_VARIANT=gapps" >> $GITHUB_ENV
+          echo "TARGET_ENABLE_HOUDINI=true" >> $GITHUB_ENV
+          echo "TARGET_ENABLE_HOUDINI_64=true" >> $GITHUB_ENV
+
+      - name: 5. 最终空间释放与编译
+        run: |
+          cd build_dir
+          # 【高风险但必须】在编译前删除整个 .repo 目录，释放约 100GB 空间
+          # 注意：这会导致无法断点续传，但在免费 GitHub 环境下是完成编译的唯一方法
+          rm -rf .repo
+          
+          source build/envsetup.sh
+          
+          # 再次声明优化变量
+          export TARGET_CPU_VARIANT=tigerlake
+          export BOARD_GPU_DRIVERS="iris"
+          export TARGET_SURFACE=true
+          export BLISS_BUILD_VARIANT=gapps
+          export TARGET_ENABLE_HOUDINI=true
+          export TARGET_ENABLE_HOUDINI_64=true
+          # 11代 CPU 专属防闪屏补丁
+          export BOARD_KERNEL_CMDLINE+=" i915.enable_psr=0 intel_pstate=passive"
+          
+          lunch bliss_x86_64-userdebug
+          
+          # 执行编译，限制为 4 线程防止内存溢出
+          mka iso_img -j4
+
+      - name: 6. 导出 Surface 版 ISO
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlissOS-17-Surface-Intel-Only
+          path: build_dir/out/target/product/x86_64/*.iso
+          retention-days: 1
