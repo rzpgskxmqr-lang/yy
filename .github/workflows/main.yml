@@ -6,12 +6,12 @@ on:
       manifest_url:
         description: '完整的 Manifest URL'
         required: true
-        # 还原回你要求的初始占位符
+        # 修正建议：启动时请输入 github.com
         default: 'github.com'
       manifest_branch:
         description: '源码分支'
         required: true
-        # 默认值改为远程存在的 universe-x86
+        # 【核心修正】：默认值改为远程存在的 universe-x86
         default: 'universe-x86'
       prune_repo:
         description: '清理磁盘释放空间 (必须填 true)'
@@ -58,6 +58,7 @@ jobs:
           
           if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
             echo "Google 源不可用，切换至 GitHub Raw 原始脚本路径..."
+            # 还原为你原始的这一行（注意：请确保你实际运行环境中这里有正确路径或该判断不生效）
             curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
           fi
           
@@ -71,25 +72,23 @@ jobs:
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 初始化：优先使用输入的分支，失败则尝试回退
+          # 初始化逻辑保持不变
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
           repo init -u "$MANIFEST_URL" -b master --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm
           
-          # 【核心修复】：使用 printf 确保生成合法的 XML，解决 no element found 错误
+          # 【核心修复部分】：仅在此处通过 printf 确保生成合法的 XML，解决 line 2 column 0 报错
           mkdir -p .repo/local_manifests
-          
-          # 动态检测项目名，若 repo list 失败则强制指定一个可能的默认值
           REAL_PROJ_NAME=$(repo list -n | grep "vendor/prebuilts" || echo "platform/vendor/prebuilts")
           
           printf '<?xml version="1.0" encoding="UTF-8"?>\n<manifest>\n  <remove-project name="%s" />\n</manifest>\n' "$REAL_PROJ_NAME" > .repo/local_manifests/remove_broken.xml
           
           echo "检测到并自动排除项目: $REAL_PROJ_NAME"
           
-          # 清理锁文件
+          # 清理锁文件并强制同步
           find .repo -name "*.lock" -delete || true
           
-          # --detach: 关键参数，忽略远程分支引用不存在的问题
+          # --detach: 强制忽略不匹配的分支引用
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
 
