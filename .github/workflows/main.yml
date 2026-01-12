@@ -1,4 +1,3 @@
-
 name: Build BlissOS 17 (Surface i1135G7 2026-Final)
 
 on:
@@ -58,7 +57,7 @@ jobs:
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (修正参数兼容版)
+      - name: 4. 源码同步 (源头精简拦截修复版)
         run: |
           set -euo pipefail
           mkdir -p build_dir && cd build_dir
@@ -69,8 +68,7 @@ jobs:
           git config --global http.lowSpeedLimit 1000
           git config --global http.lowSpeedTime 60
 
-          # 【修正点】：将 -g 移入 init 阶段。这是 2026 年处理 Groups 的标准做法
-          # 这样可以避免 repo sync 不识别 -g 的报错
+          # 初始化清单
           echo "正在初始化清单并配置精简组..."
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" \
             --depth=1 \
@@ -79,13 +77,20 @@ jobs:
             -g "default,-arm,-mips,-darwin,-tests" || \
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g "default,-arm,-mips,-darwin,-tests"
 
-          # 【核心拦截】：在同步开始前，直接从清单中删掉无关厂商
-          echo "执行源头拦截：剔除麒麟、高通、联发科、英伟达、晶晨等无关项目..."
+          # 【核心修正】：安全剔除无关厂商，防止 mismatched tag 报错
+          echo "执行源头拦截：安全剔除无关项目..."
           cd .repo/manifests
-          sed -i '/hisi/d; /hisilicon/d; /qcom/d; /mediatek/d; /mtk/d; /nvidia/d; /amlogic/d; /exynos/d; /broadcom/d' default.xml
+          cp default.xml default.xml.bak
+          # 使用 grep -Ev 排除包含特定关键字的项目行，这种方式比 sed 更能保护 XML 结构
+          grep -Ev "hisi|hisilicon|qcom|mediatek|mtk|nvidia|amlogic|exynos|broadcom" default.xml.bak > default.xml
+          
+          # 确保 XML 结束标签完整，防止误删最后一行导致的解析错误
+          if ! tail -n 1 default.xml | grep -q "</manifest>"; then
+              echo "</manifest>" >> default.xml
+          fi
           cd ../..
 
-          # 【修正点】：sync 阶段不再重复使用 -g，已由 init 阶段锁定配置
+          # 同步源码
           echo "开始同步 (极致精简模式)..."
           repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --fail-fast --retry-fetches=5
 
