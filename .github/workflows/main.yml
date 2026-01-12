@@ -64,25 +64,35 @@ jobs:
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (2026 分支智能匹配 & 排除项目组)
+      - name: 4. 源码同步 (2026 容错增强版)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 【核心优化】：增加 -g 参数排除庞大的预编译组 (pdk, vts, vndk) 以节省约 60-100GB 空间
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 -g default,-pdk,-vts,-vndk || \
-          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g default,-pdk,-vts,-vndk || \
-          repo init -u "$MANIFEST_URL" -b master --depth=1 -g default,-pdk,-vts,-vndk
+          # 初始化并排除非 Intel 厂商组
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
+          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
+          repo init -u "$MANIFEST_URL" -b master --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm
           
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+          # 清理可能残留的 Git 锁文件，解决 "could not lock config file"
+          find .repo -name "*.lock" -delete || true
+          
+          # 同步优化：
+          # --detach 解决分支引用不一致问题
+          # --force-sync 强制覆盖损坏的索引
+          # 如果多线程失败则自动转为单线程重试
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
+          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
 
       - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
         run: |
           set -euo pipefail
           cd build_dir
+          # 物理删除所有非 Intel 厂商的设备和供应商文件夹
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
+          rm -rf vendor/nvidia* vendor/qualcomm* 2>/dev/null || true
           
           if [[ "$PRUNE_REPO" == "true" ]]; then
             echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
