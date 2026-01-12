@@ -63,10 +63,10 @@ jobs:
           
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
-          
-      - name: 4. 源码同步 (2026 组排除稳健版)
+
+      - name: 4. 源码同步 (2026 自动识别排除修复版)
         run: |
-          set -euo pipefail
+         set -euo pipefail
           mkdir -p build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
@@ -95,38 +95,6 @@ jobs:
 
           # 5. 【手动排除】：同步后物理删除特定的故障目录，绕过 XML 校验报错
           rm -rf vendor/prebuilts
-
-      - 
-
-          # 5. 【手动排除】：同步完如果产生了 vendor/prebuilts 故障目录，直接物理删除
-          rm -rf vendor/prebuilts
-          set -euo pipefail
-          mkdir -p build_dir && cd build_dir
-          git config --global user.email "build@bliss.com"
-          git config --global user.name "Builder"
-          
-          # 初始化：优先使用 universe-x86，并排除庞大的预编译/厂商组
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
-          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
-          repo init -u "$MANIFEST_URL" -b master --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm
-          
-          # 【核心修复】：使用 printf 确保生成格式正确的 XML，彻底解决 "no element found" 报错
-          mkdir -p .repo/local_manifests
-          
-          # 动态获取清单中匹配 vendor/prebuilts 的项目，若获取失败则使用默认值
-          REAL_PROJ_NAME=$(repo list -n | grep "vendor/prebuilts" || echo "platform/vendor/prebuilts")
-          
-          printf '<?xml version="1.0" encoding="UTF-8"?>\n<manifest>\n  <remove-project name="%s" />\n</manifest>\n' "$REAL_PROJ_NAME" > .repo/local_manifests/remove_broken.xml
-          echo "检测到并自动排除项目: $REAL_PROJ_NAME"
-          
-          # 清理锁文件并强制同步
-          find .repo -name "*.lock" -delete || true
-          
-          # --detach: 强制忽略不匹配的分支引用
-          # --force-sync: 强制修复 Shared project 冲突
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
-          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
-
       - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
         run: |
           set -euo pipefail
