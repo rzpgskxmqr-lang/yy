@@ -64,24 +64,33 @@ jobs:
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (2026 分支修复 & 强制同步)
+      - name: 4. 源码同步 (2026 容错增强版：排除故障仓库)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 初始化：强制使用 universe-x86 作为主分支并过滤无关组
+          # 初始化：优先使用 universe-x86，并排除庞大的预编译/厂商组
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
           repo init -u "$MANIFEST_URL" -b master --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm
           
-          # 清理残留锁文件
+          # 【核心修复】：显式移除报错的 vendor/prebuilts 仓库
+          mkdir -p .repo/local_manifests
+          cat <<EOF > .repo/local_manifests/remove_broken.xml
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <remove-project name="platform/vendor/prebuilts" />
+            <remove-project name="vendor/prebuilts" />
+          </manifest>
+          EOF
+          
+          # 清理锁文件并强制同步
           find .repo -name "*.lock" -delete || true
           
-          # 【核心修复】：针对 vendor/prebuilts 报错 universe 分支找不到的问题
-          # 必须使用 --detach 强制忽略分支引用错误，直接按修订号同步
-          # 同时使用 --force-sync 解决 "Shared project" 冲突
+          # --detach: 强制忽略不匹配的分支引用
+          # --force-sync: 强制修复 Shared project 冲突
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
 
