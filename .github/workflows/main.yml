@@ -1,27 +1,26 @@
+
 name: Build BlissOS 17 (Surface i1135G7 2026-Final)
 
 on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: '完整的 Manifest URL'
+        description: '完整的 Manifest URL (例如 github.com)'
         required: true
-        # 修正建议：启动时请输入 github.com
         default: 'github.com'
       manifest_branch:
         description: '源码分支'
         required: true
-        # 【核心修正】：默认值改为远程存在的 universe-x86
         default: 'universe-x86'
       prune_repo:
-        description: '清理磁盘释放空间 (必须填 true)'
+        description: '同步后删除 .repo 文件夹以释放空间 (建议设为 true)'
         required: true
         default: 'true'
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 480
     env:
       MANIFEST_URL: ${{ github.event.inputs.manifest_url }}
       MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch }}
@@ -32,18 +31,20 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$MANIFEST_URL" == "github.com" || -z "$MANIFEST_URL" ]]; then
-            echo "错误：请填写完整的 https 仓库地址，不能只填 github.com"
+            echo "错误：请填写完整的 https 仓库地址！"
             exit 1
           fi
 
-      - name: 2. 极大化磁盘空间
+      - name: 2. 极大化磁盘空间 (2026 核心步骤)
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
           android: true
           dotnet: true
+          docker-images: true
+          large-packages: true
 
-      - name: 3. 安装工具链与修复 Repo (2026 路径修正版)
+      - name: 3. 安装工具链与修复 Repo
         run: |
           set -euo pipefail
           sudo apt update
@@ -53,39 +54,41 @@ jobs:
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
 
+          # 确保 repo 工具可用且为最新版本
           mkdir -p "$HOME/bin"
           curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
-          
-          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "Google 源不可用，切换至 GitHub Raw 原始脚本路径..."
-            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
-          fi
-          
           chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
 
-      - name: 4. 源码同步 (2026 分支智能匹配)
+      - name: 4. 源码同步 (修正卡顿优化版)
         run: |
           set -euo pipefail
-          mkdir build_dir && cd build_dir
+          mkdir -p build_dir && cd build_dir
+          
+          # Git 身份配置
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
+          git config --global http.postBuffer 524288000
           
-          # 【核心修正】：将备用分支修改为 2026 年实际存在的 universe-x86 和 master
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 || \
+          # 初始化仓库 - 使用 partial-clone 极大减少同步数据量
+          echo "Starting Repo Init..."
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 --partial-clone --clone-filter=blob:none || \
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 || \
           repo init -u "$MANIFEST_URL" -b master --depth=1
           
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+          # 同步源码 - 限制并发为 4 防止网络卡死
+          echo "Starting Repo Sync (This may take a while)..."
+          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags
 
       - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
         run: |
           set -euo pipefail
           cd build_dir
+          # 删除不相关的驱动以腾出编译空间
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
           
           if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
+            echo "正在删除 .repo 以释放约 150GB 空间用于编译和打包..."
             rm -rf .repo
           fi
 
@@ -93,13 +96,12 @@ jobs:
         run: |
           set -euo pipefail
           cd build_dir
-          # 显式使用 bash 执行 source 以确保环境加载正确
+          # 使用 Tigerlake (i1135G7) 架构优化参数
           /bin/bash -c "source build/envsetup.sh && \
           export TARGET_CPU_VARIANT='tigerlake' && \
           export BOARD_GPU_DRIVERS='iris' && \
           export TARGET_SURFACE=true && \
           export BLISS_BUILD_VARIANT='gapps' && \
-          export BOARD_KERNEL_CMDLINE='${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive' && \
           lunch bliss_x86_64-userdebug && \
           mka iso_img -j$(nproc)"
 
@@ -109,4 +111,4 @@ jobs:
         with:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
-          retention-days: 1
+          retention-days: 7
