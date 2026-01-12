@@ -119,7 +119,8 @@ jobs:
           fi
 
       - name: 6. 针对 Surface i1135G7 执行专项优化编译
-        run: | set -euo pipefail
+        run: | 
+          set -euo pipefail
           cd build_dir
           # 显式使用 bash 执行 source 以确保环境加载正确
           /bin/bash -c "source build/envsetup.sh && \
