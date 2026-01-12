@@ -12,7 +12,7 @@ on:
         required: true
         default: 'universe-x86'
       prune_repo:
-        description: '同步后删除 .repo 文件夹以释放空间 (建议设为 true)'
+        description: '清理磁盘释放空间 (必须填 true)'
         required: true
         default: 'true'
 
@@ -34,18 +34,15 @@ jobs:
             exit 1
           fi
 
-      - name: 2. 极大化磁盘空间并强制开启 Swap
+      - name: 2. 极大化磁盘空间
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
           android: true
           dotnet: true
-          docker-images: true
-          large-packages: true
-          # 【2026 防崩溃修正】：开启 Swap 虚拟内存，防止内存溢出导致 Runner 失联
-          swap-storage: true
+          swap-storage: true # 2026 必开启，防止内存溢出失联
 
-      - name: 3. 安装工具链与修复 Repo
+      - name: 3. 安装工具链与修复 Repo (2026 路径修正版)
         run: |
           set -euo pipefail
           sudo apt update
@@ -56,75 +53,71 @@ jobs:
             python3-setuptools openjdk-17-jdk
 
           mkdir -p "$HOME/bin"
-          curl -fsSL storage.googleapis.com > "$HOME/bin/repo"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
           chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (防卡死与低并发稳定版)
+      - name: 4. 源码同步 (源头精简拦截版)
         run: |
           set -euo pipefail
-          mkdir -p build_dir && cd build_dir
+          mkdir build_dir && cd build_dir
           
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           git config --global http.postBuffer 524288000
-          # 【防挂起修正】：设置极低速度阈值，超时自动重连
           git config --global http.lowSpeedLimit 1000
           git config --global http.lowSpeedTime 60
 
-          echo "Starting Repo Init (Extreme Sparse Mode)..."
+          # 初始化 - 使用 partial-clone 和 blob:none 极大减小元数据
+          echo "正在初始化清单..."
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 --partial-clone --clone-filter=blob:none || \
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 --partial-clone --clone-filter=blob:none
-          
-          # 【核心修正】：限制并发为 j4 降低内存和 IO 压力，防止 Runner 崩溃
-          echo "Starting Repo Sync (Quiet mode to save buffer)..."
-          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --fail-fast --retry-fetches=5 -g default,-arm,-mips,-darwin,-tests -q
 
-      - name: 5. 深度释放磁盘空间 (精简组件，保留中英文字体)
+          # 【核心拦截】：在同步开始前，直接从清单中删掉无关厂商，彻底防止下载
+          echo "执行源头拦截：剔除麒麟、高通、联发科、英伟达、晶晨等无关项目..."
+          cd .repo/manifests
+          # 物理删除清单中包含这些厂商关键字的行
+          sed -i '/hisi/d; /hisilicon/d; /qcom/d; /mediatek/d; /mtk/d; /nvidia/d; /amlogic/d; /exynos/d; /broadcom/d' default.xml
+          cd ../..
+
+          # 同步 - 加入组过滤进一步精简，限制并发防止 IO 爆表
+          echo "开始同步 (极致精简模式)..."
+          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --fail-fast --retry-fetches=5 -g default,-arm,-mips,-darwin,-tests
+
+      - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
         run: |
           set -euo pipefail
           cd build_dir
           
-          echo "=== 正在执行深度清理以确保 Runner 通讯不中断 ==="
-          rm -rf external/chromium-webview 2>/dev/null || true
-          
-          if [ -d "external/noto-fonts" ]; then
-            mkdir -p ../temp_fonts
-            mv external/noto-fonts/cjk ../temp_fonts/ 2>/dev/null || true
-            mv external/roboto-fonts ../temp_fonts/ 2>/dev/null || true
-            rm -rf external/noto-fonts/* 2>/dev/null || true
-            mv ../temp_fonts/cjk external/noto-fonts/ 2>/dev/null || true
-            mv ../temp_fonts/roboto-fonts external/ 2>/dev/null || true
-            rm -rf ../temp_fonts
-          fi
-          
+          # 清理剩余的非 x86 驱动冗余
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
-          rm -rf device/hisilicon vendor/hisi 2>/dev/null || true
+          rm -rf device/linaro 2>/dev/null || true
+          # 额外精简 WebView 和 演示视频
+          rm -rf external/chromium-webview 2>/dev/null || true
+          rm -rf frameworks/base/data/videos/* 2>/dev/null || true
           
           if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "彻底删除 .repo 文件夹..."
+            echo "正在删除 .repo 以释放关键空间..."
             rm -rf .repo
           fi
-
-          # 清理 Git 冗余以获得最后 10GB 缓冲
+          
+          # 彻底清理 Git 冗余空间
           find . -name ".git" -type d -exec rm -rf {} + || true
           df -h .
 
-      - name: 6. 执行专项优化编译 (防溢出并发限制)
+      - name: 6. 针对 Surface i1135G7 执行专项优化编译
         run: |
           set -euo pipefail
           cd build_dir
-          
-          # 【2026 防失联关键】：
-          # 不要使用 -j$(nproc)，在标准虚拟机上这会因内存耗尽而杀掉进程。
-          # 限制为 -j4 或 -j8 可以让编译更稳健。
+          # 使用 Tigerlake (i1135G7) 架构优化参数
           /bin/bash -c "source build/envsetup.sh && \
           export TARGET_CPU_VARIANT='tigerlake' && \
           export BOARD_GPU_DRIVERS='iris' && \
           export TARGET_SURFACE=true && \
           export BLISS_BUILD_VARIANT='gapps' && \
+          export BOARD_KERNEL_CMDLINE='${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive' && \
           lunch bliss_x86_64-userdebug && \
-          mka iso_img -j4"
+          mka iso_img -j4" # 限制 -j4 保证内存不溢出
 
       - name: 7. 上传结果
         if: success()
@@ -132,4 +125,4 @@ jobs:
         with:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
-          retention-days: 7
+          retention-days: 1
