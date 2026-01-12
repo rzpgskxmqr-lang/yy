@@ -119,8 +119,7 @@ jobs:
           fi
 
       - name: 6. 针对 Surface i1135G7 执行专项优化编译
-        run: |
-          set -euo pipefail
+        run: | set -euo pipefail
           cd build_dir
           # 显式使用 bash 执行 source 以确保环境加载正确
           /bin/bash -c "source build/envsetup.sh && \
@@ -129,8 +128,11 @@ jobs:
           export TARGET_SURFACE=true && \
           export BLISS_BUILD_VARIANT='gapps' && \
           export BOARD_KERNEL_CMDLINE='${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive' && \
-          lunch bliss_x86_64-userdebug && \
+          # 【核心修复】：2026规范要求格式为 <product>-<release>-<variant>
+          # 我们尝试 trunk_staging 这个标准发布标签，如果失败则回退到旧格式
+          (lunch bliss_x86_64-trunk_staging-userdebug || lunch bliss_x86_64-userdebug) && \
           mka iso_img -j$(nproc)"
+          
 
       - name: 7. 上传结果
         if: success()
