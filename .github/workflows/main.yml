@@ -1,49 +1,112 @@
-      - name: 4. 源码同步 (2026 语法加固与拦截修复版)
+name: Build BlissOS 17 (Surface i1135G7 2026-Final)
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_url:
+        description: '完整的 Manifest URL'
+        required: true
+        # 修正建议：启动时请输入 github.com
+        default: 'github.com'
+      manifest_branch:
+        description: '源码分支'
+        required: true
+        # 【核心修正】：默认值改为远程存在的 universe-x86
+        default: 'universe-x86'
+      prune_repo:
+        description: '清理磁盘释放空间 (必须填 true)'
+        required: true
+        default: 'true'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      MANIFEST_URL: ${{ github.event.inputs.manifest_url }}
+      MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch }}
+      PRUNE_REPO: ${{ github.event.inputs.prune_repo }}
+
+    steps:
+      - name: 1. 验证输入合法性
         run: |
           set -euo pipefail
-          mkdir -p build_dir && cd build_dir
+          if [[ "$MANIFEST_URL" == "github.com" || -z "$MANIFEST_URL" ]]; then
+            echo "错误：请填写完整的 https 仓库地址，不能只填 github.com"
+            exit 1
+          fi
+
+      - name: 2. 极大化磁盘空间
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+
+      - name: 3. 安装工具链与修复 Repo (2026 路径修正版)
+        run: |
+          set -euo pipefail
+          sudo apt update
+          sudo apt install -y bc bison build-essential ccache curl flex g++-multilib \
+            gcc-multilib git git-lfs gnupg gperf lib32readline-dev lib32z1-dev \
+            libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
+            lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
+            python3-setuptools openjdk-17-jdk
+
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
           
+          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
+            echo "Google 源不可用，切换至 GitHub Raw 原始脚本路径..."
+            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
+          fi
+          
+          chmod a+x "$HOME/bin/repo"
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
+
+      - name: 4. 源码同步 (2026 分支智能匹配)
+        run: |
+          set -euo pipefail
+          mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
-          git config --global http.postBuffer 524288000
-          git config --global http.lowSpeedLimit 1000
-          git config --global http.lowSpeedTime 60
+          
+          # 【核心修正】：将备用分支修改为 2026 年实际存在的 universe-x86 和 master
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 || \
+          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 || \
+          repo init -u "$MANIFEST_URL" -b master --depth=1
+          
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-          # 初始化清单
-          echo "正在初始化清单并配置精简组..."
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" \
-            --depth=1 \
-            --partial-clone \
-            --clone-filter=blob:none \
-            -g "default,-arm,-mips,-darwin,-tests" || \
-          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g "default,-arm,-mips,-darwin,-tests"
+      - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
+        run: |
+          set -euo pipefail
+          cd build_dir
+          rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
+          
+          if [[ "$PRUNE_REPO" == "true" ]]; then
+            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
+            rm -rf .repo
+          fi
 
-          # 【核心拦截与冲突修复】：精准剔除无关硬件项目，并同步清理 remove-project 标签
-          echo "执行源头拦截：正在剔除无关厂商并修复依赖冲突..."
-          cd .repo/manifests
-          python3 -c '
-          import os, re
-          # 核心关键字
-          keywords = ["hisi", "hisilicon", "qcom", "mediatek", "mtk", "nvidia", "amlogic", "exynos", "broadcom", "yukawa"]
-          if os.path.exists("default.xml"):
-              with open("default.xml", "r") as f:
-                  content = f.read()
-              
-              for kw in keywords:
-                  # 使用字符串拼接构建正则，避开 Shell 对 f-string 的干扰
-                  # 匹配 <project ... name="...kw..." ... />
-                  p_regex = "<project\\s+[^>]*?name=\"[^\"]*?" + kw + "[^\"]*?\"[^>]*?/>"
-                  content = re.sub(p_regex, "", content, flags=re.IGNORECASE | re.S)
-                  
-                  # 匹配 <remove-project ... name="...kw..." ... />
-                  r_regex = "<remove-project\\s+[^>]*?name=\"[^\"]*?" + kw + "[^\"]*?\"[^>]*?/>"
-                  content = re.sub(r_regex, "", content, flags=re.IGNORECASE | re.S)
-              
-              with open("default.xml", "w") as f:
-                  f.write(content)
-          '
-          cd ../..
+      - name: 6. 针对 Surface i1135G7 执行专项优化编译
+        run: |
+          set -euo pipefail
+          cd build_dir
+          # 显式使用 bash 执行 source 以确保环境加载正确
+          /bin/bash -c "source build/envsetup.sh && \
+          export TARGET_CPU_VARIANT='tigerlake' && \
+          export BOARD_GPU_DRIVERS='iris' && \
+          export TARGET_SURFACE=true && \
+          export BLISS_BUILD_VARIANT='gapps' && \
+          export BOARD_KERNEL_CMDLINE='${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive' && \
+          lunch bliss_x86_64-userdebug && \
+          mka iso_img -j$(nproc)"
 
-          # 同步源码
-          echo "开始同步 (极致精简模式)..."
-          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --fail-fast --retry-fetches=5
+      - name: 7. 上传结果
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlissOS-17-Surface-i1135G7
+          path: build_dir/out/target/product/x86_64/*.iso
+          retention-days: 1
