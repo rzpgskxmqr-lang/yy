@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: '完整的 Manifest URL (例如 github.com)'
+        description: '完整的 Manifest URL'
         required: true
         default: 'github.com'
       manifest_branch:
@@ -53,74 +53,65 @@ jobs:
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
 
-          # 确保 repo 工具可用且为最新版本
           mkdir -p "$HOME/bin"
           curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
 
-      - name: 4. 源码同步 (修正卡顿优化版)
+      - name: 4. 源码同步与即时深度瘦身 (边同步边瘦身版)
         run: |
           set -euo pipefail
           mkdir -p build_dir && cd build_dir
           
-          # Git 身份配置
+          # Git 极致空间优化配置
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           git config --global http.postBuffer 524288000
           
-          # 初始化仓库 - 使用 partial-clone 极大减少同步数据量
-          echo "Starting Repo Init..."
+          # 初始化 - 使用 blob:none 过滤所有历史记录，仅拉取当前代码
+          echo "Starting Repo Init (Extreme Sparse Mode)..."
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 --partial-clone --clone-filter=blob:none || \
-          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 || \
-          repo init -u "$MANIFEST_URL" -b master --depth=1
+          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 --partial-clone --clone-filter=blob:none
           
-          # 同步源码 - 限制并发为 4 防止网络卡死
+          # 同步 - 限制并发防止峰值流量导致的临时文件堆积
           echo "Starting Repo Sync (This may take a while)..."
-          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags
-
-      - name: 5. 深度释放磁盘空间 (精简组件，保留中英文字体与 Git 冗余清理)
-        run: |
-          set -euo pipefail
-          cd build_dir
+          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --fail-fast
           
-          echo "=== 正在清理非核心巨型组件 ==="
-          # 1. 删除 WebView (约 5GB+)
+          echo "=== 同步完成，立即开始深度瘦身以腾出编译空间 ==="
+          
+          # 1. 移除巨型非核心组件 (如 WebView 约 5GB+)
           rm -rf external/chromium-webview 2>/dev/null || true
           
-          # 2. 精简字体库：删除其余小众语言字体，专门保留中文 (CJK) 和 英文 (Roboto)
+          # 2. 精简字体库：仅保留中文 (CJK) 和 英文 (Roboto)
           if [ -d "external/noto-fonts" ]; then
-            echo "正在保留中英文字体并清理冗余字体..."
+            echo "正在保留中英文字体..."
             mkdir -p ../temp_fonts
-            # 备份中文字体和系统核心英文字体
             mv external/noto-fonts/cjk ../temp_fonts/ 2>/dev/null || true
             mv external/roboto-fonts ../temp_fonts/ 2>/dev/null || true
-            # 清理其余所有 Noto 系列字体
             rm -rf external/noto-fonts/* 2>/dev/null || true
-            # 还原备份
             mv ../temp_fonts/cjk external/noto-fonts/ 2>/dev/null || true
             mv ../temp_fonts/roboto-fonts external/ 2>/dev/null || true
             rm -rf ../temp_fonts
           fi
           
-          # 3. 删除不相关的硬件驱动 (针对 i1135G7 瘦身)
+          # 3. 删除不相关的驱动 (AMD/Linaro)
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
           rm -rf device/linaro 2>/dev/null || true
           
-          # 4. 删除 .repo 目录 (释放核心同步缓存)
+          # 4. 【救命步】删除 .repo 缓存 (释放约 150GB 空间)
           if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "正在删除 .repo 文件夹以释放约 150GB 空间..."
+            echo "紧急释放磁盘空间：正在彻底删除 .repo 目录..."
             rm -rf .repo
           fi
 
-          # 5. 彻底清理所有子目录下的 .git 冗余 (额外回收 10GB+ 空间)
-          echo "正在清理子目录 Git 冗余..."
+          # 5. 清理 Git 历史冗余 (额外释放 10GB+ 空间)
+          echo "正在清理子仓库 Git 冗余..."
           find . -name ".git" -type d -exec rm -rf {} + || true
           
-          echo "=== 空间清理完成 ==="
+          echo "=== 空间准备就绪 ==="
           df -h .
 
-      - name: 6. 针对 Surface i1135G7 执行专项优化编译
+      - name: 5. 针对 Surface i1135G7 执行专项优化编译
         run: |
           set -euo pipefail
           cd build_dir
@@ -133,7 +124,7 @@ jobs:
           lunch bliss_x86_64-userdebug && \
           mka iso_img -j$(nproc)"
 
-      - name: 7. 上传结果
+      - name: 6. 上传结果
         if: success()
         uses: actions/upload-artifact@v4
         with:
