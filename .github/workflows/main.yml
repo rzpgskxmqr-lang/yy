@@ -1,14 +1,18 @@
-name: Build BlissOS 17 (Surface i1135G7 Final Fix)
+name: Build BlissOS 17 (Surface i1135G7 Final)
 
 on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: 'BlissOS Manifest URL'
+        description: 'Manifest URL'
         required: true
         default: 'github.com'
+      manifest_branch:
+        description: '分支 (2026最新: v17.x)'
+        required: true
+        default: 'v17.x'
       prune_repo:
-        description: '是否清理磁盘 (免费版 GitHub 必须填 true)'
+        description: '清理磁盘 (必须填 true)'
         required: true
         default: 'true'
 
@@ -18,16 +22,17 @@ jobs:
     timeout-minutes: 360
     env:
       MANIFEST_URL: ${{ github.event.inputs.manifest_url }}
+      MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch }}
 
     steps:
-      - name: 1. 极大化磁盘空间 (关键优化)
+      - name: 1. 极大化磁盘空间
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
           android: true
           dotnet: true
 
-      - name: 2. 安装 AOSP 工具链并修复 Repo 二进制
+      - name: 2. 安装 AOSP 2026 工具链与修复 Repo
         run: |
           set -euo pipefail
           sudo apt update
@@ -36,38 +41,33 @@ jobs:
             libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
-
+          
           mkdir -p "$HOME/bin"
-          # 【核心修复】：使用包含完整路径的官方稳定下载源
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
-          
-          # 鲁棒性检查：如果下载的仍是 HTML 网页，则使用 GitHub Raw 备用地址
-          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "官方源下载失败，正在尝试 GitHub Raw 镜像..."
-            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
-          fi
-          
+          # 使用修正后的完整路径下载真正的 repo 脚本
+          curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
 
-      - name: 3. 源码同步 (针对 Surface 瘦身)
+      - name: 3. 源码同步 (修正分支名)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 初始化并同步，--depth=1 节省关键磁盘空间
-          repo init -u "$MANIFEST_URL" -b bliss-v17.x --depth=1
+          # 初始化：使用 v17.x 分支
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 4. 磁盘清理 (释放 150GB 空间供编译使用)
+      - name: 4. 释放空间 (针对 i1135G7 瘦身)
         run: |
           cd build_dir
-          # 物理剔除非 Intel 平台代码
+          # 物理剔除非 Intel 平台代码腾空间
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
+          find kernel -mindepth 1 -maxdepth 1 -not -name "x86*" -exec rm -rf {} + || true
+          
           if [[ "${{ github.event.inputs.prune_repo }}" == "true" ]]; then
-            echo "PRUNE_REPO 为 true，正在删除 .repo 以释放磁盘空间..."
+            echo "正在删除 .repo 目录以确保编译空间..."
             rm -rf .repo
           fi
 
@@ -77,24 +77,22 @@ jobs:
           cd build_dir
           source build/envsetup.sh
           
-          # 针对 i1135G7 Iris Xe 显卡与 Surface 的特定优化
+          # 架构优化与驱动
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           export TARGET_ENABLE_HOUDINI=true
           export TARGET_ENABLE_HOUDINI_64=true
-          # 关键：解决 Surface Pro 8 等 11 代酷睿闪屏的内核补丁参数
+          # 核心修复：解决 Surface Pro 8/Laptop 4 等 11 代 CPU 闪屏
           export BOARD_KERNEL_CMDLINE="${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive"
           
           lunch bliss_x86_64-userdebug
-          # 使用 4 线程编译，防止内存溢出 (OOM)
           mka iso_img -j4
 
-      - name: 6. 上传编译产物 (ISO)
+      - name: 6. 上传 ISO
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
-          retention-days: 1
