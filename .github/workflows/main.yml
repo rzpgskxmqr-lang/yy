@@ -1,3 +1,5 @@
+
+
 name: Build BlissOS 17 (Surface i1135G7 2026-Final)
 
 on:
@@ -53,7 +55,7 @@ jobs:
             python3-setuptools openjdk-17-jdk
 
           mkdir -p "$HOME/bin"
-          curl -fsSL storage.googleapis.com > "$HOME/bin/repo"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
@@ -77,8 +79,8 @@ jobs:
             -g "default,-arm,-mips,-darwin,-tests" || \
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g "default,-arm,-mips,-darwin,-tests"
 
-          # 【核心拦截】：安全剔除无关项目，同时处理 remove-project 导致的冲突
-          echo "执行源头拦截：正在精准剔除无关硬件项目并同步清理 remove-project 标签..."
+          # 【核心拦截与冲突修复】：精准剔除无关硬件项目，并同步清理 remove-project 标签
+          echo "执行源头拦截：正在剔除无关厂商并修复依赖冲突..."
           cd .repo/manifests
           python3 -c '
           import os, re
@@ -87,12 +89,11 @@ jobs:
               with open("default.xml", "r") as f:
                   content = f.read()
               
-              # 1. 精准删除包含关键字的 <project ... /> 块
+              # 1. 精准删除包含关键字的 <project ... /> 标签块
               proj_pattern = re.compile(r"<project\s+[^>]*?name=\"([^\"]*?(?:" + "|".join(keywords) + r")[^\"]*?)\"[^>]*?/>", re.S)
               content = proj_pattern.sub("", content)
               
-              # 2. 【修复关键】：同步删除包含关键字的 <remove-project ... /> 标签
-              # 解决 "remove-project element specifies non-existent project" 报错
+              # 2. 同步删除包含关键字的 <remove-project ... /> 标签，防止 repo 报错
               rem_pattern = re.compile(r"<remove-project\s+name=\"([^\"]*?(?:" + "|".join(keywords) + r")[^\"]*?)\"[^>]*?/>", re.S)
               content = rem_pattern.sub("", content)
               
@@ -147,5 +148,3 @@ jobs:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
           retention-days: 1
-
-
