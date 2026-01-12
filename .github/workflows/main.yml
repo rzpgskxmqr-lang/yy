@@ -1,14 +1,14 @@
-name: Build BlissOS 17 (Surface i1135G7 Final)
+name: Build BlissOS 17 (Surface i1135G7 Final Fix)
 
 on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: 'Manifest URL'
+        description: '源码地址'
         required: true
         default: 'github.com'
       manifest_branch:
-        description: '分支 (2026最新: v17.x)'
+        description: '分支 (v17.x)'
         required: true
         default: 'v17.x'
       prune_repo:
@@ -20,9 +20,6 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    env:
-      MANIFEST_URL: ${{ github.event.inputs.manifest_url }}
-      MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch }}
 
     steps:
       - name: 1. 极大化磁盘空间
@@ -32,7 +29,7 @@ jobs:
           android: true
           dotnet: true
 
-      - name: 2. 安装 AOSP 2026 工具链与修复 Repo
+      - name: 2. 安装 AOSP 工具链与 Repo 脚本 (防 HTML 错误版)
         run: |
           set -euo pipefail
           sudo apt update
@@ -41,51 +38,58 @@ jobs:
             libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
-          
+
           mkdir -p "$HOME/bin"
-          # 使用修正后的完整路径下载真正的 repo 脚本
+          
+          # 【核心修复】：使用 Google 提供的 Repo 原始链接，并增加自动重试镜像
+          curl -fsSL storage.googleapis.com > "$HOME/bin/repo" || \
           curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
+
+          # 【二次检查】：如果文件开头还是 HTML 标签，说明下载地址被拦截，直接从镜像库强拉
+          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
+            echo "警告：检测到 HTML 网页。正在尝试从镜像站下载..."
+            curl -fsSL mirrors.tuna.tsinghua.edu.cn > "$HOME/bin/repo"
+          fi
+          
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
+          echo "Repo 工具安装成功！"
 
-      - name: 3. 源码同步 (修正分支名)
+      - name: 3. 源码同步 (2026 分支: v17.x)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 初始化：使用 v17.x 分支
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
+          # 初始化：使用 2026 年验证过的 v17.x 分支
+          repo init -u "${{ github.event.inputs.manifest_url }}" -b "${{ github.event.inputs.manifest_branch }}" --depth=1
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 4. 释放空间 (针对 i1135G7 瘦身)
+      - name: 4. 释放空间与 i1135G7 专项优化
         run: |
           cd build_dir
-          # 物理剔除非 Intel 平台代码腾空间
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
-          find kernel -mindepth 1 -maxdepth 1 -not -name "x86*" -exec rm -rf {} + || true
-          
           if [[ "${{ github.event.inputs.prune_repo }}" == "true" ]]; then
-            echo "正在删除 .repo 目录以确保编译空间..."
             rm -rf .repo
           fi
 
-      - name: 5. 针对 i1135G7 (Tiger Lake) 执行专项编译
+      - name: 5. 针对 Surface i1135G7 执行编译
         run: |
           set -euo pipefail
           cd build_dir
           source build/envsetup.sh
           
-          # 架构优化与驱动
+          # Tiger Lake (1135G7) 指令集优化
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           export TARGET_ENABLE_HOUDINI=true
           export TARGET_ENABLE_HOUDINI_64=true
-          # 核心修复：解决 Surface Pro 8/Laptop 4 等 11 代 CPU 闪屏
-          export BOARD_KERNEL_CMDLINE="${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive"
+          
+          # 核心修复：防止 Surface 11代 CPU 屏幕闪烁
+          export BOARD_KERNEL_CMDLINE="i915.enable_psr=0 intel_pstate=passive"
           
           lunch bliss_x86_64-userdebug
           mka iso_img -j4
