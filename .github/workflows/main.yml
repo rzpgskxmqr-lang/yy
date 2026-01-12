@@ -1,14 +1,26 @@
+# Build BlissOS 17 (Intel Surface Optimized)
+# 注意：请替换 MANIFEST_URL 和 HOUDINI_REPO 为真实仓库地址/分支
 name: Build BlissOS 17 (Intel Surface Optimized)
 
 on:
-  workflow_dispatch: # 允许手动点击运行
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    env:
+      MANIFEST_URL: "https://github.com/OWNER/MANIFEST_REPO.git"     # 必须替换为实际 manifest 仓库 URL
+      MANIFEST_BRANCH: "bliss-v17.x"                                # 必要时替换为目标分支
+      HOUDINI_REPO: "https://github.com/OWNER/houdini.git"          # 必须替换为实际 houdini 仓库 URL（或移除此步）
+      TARGET_PRODUCT: "bliss_x86_64"                                # 可按需修改
+      BUILD_VARIANT: "userdebug"
+      JOBS: ${{ runner.cores || 4 }}
 
     steps:
+      - name: Checkout workflow (optional)
+        uses: actions/checkout@v4
+
       - name: 1. 极大化磁盘空间 (关键优化)
         uses: jlumbroso/free-disk-space@main
         with:
@@ -19,58 +31,78 @@ jobs:
           large-packages: true
           swap-storage: true
 
-      - name: 2. 安装 AOSP 编译工具链
+      - name: 2. 安装 AOSP 编译工具链与 repo 二进制
         run: |
+          set -euo pipefail
           sudo apt update
           sudo apt install -y bc bison build-essential ccache curl flex g++-multilib \
             gcc-multilib git git-lfs gnupg gperf lib32readline-dev lib32z1-dev \
             libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
-            lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 openjdk-17-jdk
-          
-          mkdir -p ~/bin
-          curl storage.googleapis.com > ~/bin/repo
-          chmod a+x ~/bin/repo
-          sudo ln -sf ~/bin/repo /usr/bin/repo
+            lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
+            python3-distutils openjdk-17-jdk
+          mkdir -p "$HOME/bin"
+          # 正确下载 repo binary 并保存到 ~/bin/repo
+          curl -fsSLo "$HOME/bin/repo" https://storage.googleapis.com/git-repo-downloads/repo
+          chmod a+x "$HOME/bin/repo"
+          export PATH="$HOME/bin:$PATH"
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
       - name: 3. 源码同步 (仅保留 Intel/Surface 必要代码)
         run: |
+          set -euo pipefail
+          rm -rf build_dir
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
-          
-          repo init -u github.com -b bliss-v17.x --depth=1
-          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
-          
+
+          # 请务必把 MANIFEST_URL 替换为真实 manifest 仓库地址
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
+          repo sync -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags
+
           # 物理剔除非 Intel/Surface 相关代码以节省空间
-          rm -rf device/generic/amd*
-          rm -rf vendor/amd
-          find kernel -mindepth 1 -maxdepth 1 -not -name "x86*" -exec rm -rf {} +
+          rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
+          find kernel -mindepth 1 -maxdepth 1 -not -name "x86*" -exec rm -rf {} + || true
 
       - name: 4. 集成 ARM 兼容层 (Houdini)
+        if: env.HOUDINI_REPO != ''
         run: |
+          set -euo pipefail
           cd build_dir
-          git clone github.com -b bliss-v17.x vendor/intel/houdini --depth=1
+          # 请替换 HOUDINI_REPO 为实际仓库 URL 和所需分支（如有）
+          git clone --depth=1 --branch "$MANIFEST_BRANCH" "$HOUDINI_REPO" vendor/intel/houdini || true
 
       - name: 5. 执行 1135G7 专项优化编译
         run: |
+          set -euo pipefail
           cd build_dir
-          # 为了给 100GB 的编译产物留出空间，必须删除 .repo
-          rm -rf .repo
-          
+
+          # 注意：删除 .repo 可以释放大量磁盘，但可能会导致部分工具/脚本依赖 repo metadata 出错
+          # 如果不能删除，请注释掉下一行。
+          rm -rf .repo || true
+
+          # 初始化编译环境
           source build/envsetup.sh
-          
-          # 设置 i1135G7 (Tiger Lake) 与 Surface 核心变量
-          export TARGET_CPU_VARIANT=tigerlake
+
+          # 开启 ccache 并限制大小（提升重构建速度）
+          export USE_CCACHE=1
+          export CCACHE_DIR="$HOME/.ccache"
+          mkdir -p "$CCACHE_DIR"
+          ccache -M 50G || true
+
+          # 设置针对 i1135G7 / Tiger Lake 的编译变量
+          export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
-          export BLISS_BUILD_VARIANT=gapps
+          export BLISS_BUILD_VARIANT="gapps"
           export TARGET_ENABLE_HOUDINI=true
           export TARGET_ENABLE_HOUDINI_64=true
-          # 针对 11 代核显的防闪屏补丁
-          export BOARD_KERNEL_CMDLINE+=" i915.enable_psr=0 intel_pstate=passive"
-          
-          lunch bliss_x86_64-userdebug
-          mka iso_img -j4
+
+          # 安全追加 kernel cmdline（避免未定义变量导致的问题）
+          export BOARD_KERNEL_CMDLINE="${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive"
+
+          # 选择目标并构建（并行数使用 runner 的核数）
+          lunch "${TARGET_PRODUCT}-${BUILD_VARIANT}"
+          mka iso_img -j"$(nproc)"
 
       - name: 6. 上传 ISO 镜像
         if: success()
