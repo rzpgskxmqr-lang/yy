@@ -1,24 +1,29 @@
 
-# Build BlissOS 17 (Intel Surface Optimized) - 2026 Final Version
-name: Build BlissOS 17 (Intel Surface Optimized)
+name: Build BlissOS 17 (Surface i1135G7 Optimized)
 
 on:
   workflow_dispatch:
+    inputs:
+      manifest_url:
+        description: 'Manifest URL'
+        required: true
+        default: 'github.com'
+      manifest_branch:
+        description: 'Branch (bliss-v17.x 为 Android 14)'
+        required: true
+        default: 'bliss-v17.x'
+      houdini_repo:
+        description: 'Houdini Repo (ARM 兼容层)'
+        required: false
+        default: 'github.com'
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    env:
-      # 已替换为官方真实地址
-      MANIFEST_URL: "github.com"
-      MANIFEST_BRANCH: "bliss-v17.x"
-      HOUDINI_REPO: "github.com"
-      TARGET_PRODUCT: "bliss_x86_64"
-      BUILD_VARIANT: "userdebug"
 
     steps:
-      - name: 1. 极大化磁盘空间
+      - name: 1. 极限腾出磁盘空间 (解决免费版空间不足)
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
@@ -28,67 +33,73 @@ jobs:
           large-packages: true
           swap-storage: true
 
-      - name: 2. 安装编译工具链与修正 Repo
+      - name: 2. 安装 AOSP 2026 工具链 (修正 distutils 错误)
         run: |
           set -euo pipefail
           sudo apt update
+          # 在 Ubuntu 24.04 中，使用 python3-setuptools 替代已移除的 python3-distutils
           sudo apt install -y bc bison build-essential ccache curl flex g++-multilib \
             gcc-multilib git git-lfs gnupg gperf lib32readline-dev lib32z1-dev \
             libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
-            python3-distutils openjdk-17-jdk
+            python3-setuptools openjdk-17-jdk
+          
           mkdir -p "$HOME/bin"
-          # 使用 GitHub 官方源下载 repo 脚本，避开 Google 403 错误
+          # 使用 GitHub 镜像下载 repo，避免 storage.googleapis.com 的访问头错误
           curl -fsSLo "$HOME/bin/repo" raw.githubusercontent.com
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
 
-      - name: 3. 源码同步 (极简 Intel 模式)
+      - name: 3. 源码瘦身同步 (仅限 Intel/Surface)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
-
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
+          
+          repo init -u "${{ github.event.inputs.manifest_url }}" -b "${{ github.event.inputs.manifest_branch }}" --depth=1
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
-
-          # 空间优化：剔除非 Intel 平台代码
+          
+          # 物理剔除非 Intel 平台代码以腾出约 40GB 空间
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
           find kernel -mindepth 1 -maxdepth 1 -not -name "x86*" -exec rm -rf {} + || true
 
       - name: 4. 集成 ARM 兼容层 (Houdini)
+        if: github.event.inputs.houdini_repo != ''
         run: |
           cd build_dir
-          git clone --depth=1 --branch "$MANIFEST_BRANCH" "$HOUDINI_REPO" vendor/intel/houdini || true
+          git clone --depth=1 --branch "${{ github.event.inputs.manifest_branch }}" "${{ github.event.inputs.houdini_repo }}" vendor/intel/houdini || true
 
-      - name: 5. 执行 1135G7/Surface 专项优化编译
+      - name: 5. 针对 i1135G7 (Tiger Lake) 执行专项编译
         run: |
           set -euo pipefail
           cd build_dir
-
-          # 关键空间回收：删除同步元数据，否则磁盘必满
+          
+          # 【极其重要】删除 .repo 目录。
+          # Android 14 源码 + 编译产物超过 300GB，不删此目录 GitHub 磁盘必满。
           rm -rf .repo || true
-
+          
           source build/envsetup.sh
-
-          # 开启 i1135G7 指令集优化 (Tiger Lake)
+          
+          # Tiger Lake (1135G7) 专项指令集与 Iris Xe 驱动优化
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           export TARGET_ENABLE_HOUDINI=true
           export TARGET_ENABLE_HOUDINI_64=true
+          # 修复 Surface 11代 CPU 闪屏的内核参数
           export BOARD_KERNEL_CMDLINE="i915.enable_psr=0 intel_pstate=passive"
-
-          lunch "${TARGET_PRODUCT}-${BUILD_VARIANT}"
-          # 使用 4 线程防止内存溢出
+          
+          lunch bliss_x86_64-userdebug
+          # 使用 4 线程编译以平衡速度与内存占用
           mka iso_img -j4
 
-      - name: 6. 上传 ISO 镜像
+      - name: 6. 上传 Surface 版 ISO 产物
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
           retention-days: 1
+
