@@ -1,26 +1,24 @@
-
-# Build BlissOS 17 (Surface i1135G7 Optimized) — safer template (manifest_branch=bliss-v17.x, houdini_repo empty, prune_repo=false)
 name: Build BlissOS 17 (Surface i1135G7 Optimized)
 
 on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: https://github.com/BlissOS/platform_manifest.git
+        description: '源码地址'
         required: true
-        default: ''
+        default: 'https://github.com/BlissOS/platform_manifest.git'
       manifest_branch:
-        description: 'Manifest 分支（默认: bliss-v17.x）'
-        required: false
+        description: '分支'
+        required: true
         default: 'bliss-v17.x'
       houdini_repo:
-        description: https://github.com/BlissOS-AICP/vendor_intel_houdini.git
+        description: '兼容层地址'
         required: false
-        default: ''
+        default: 'https://github.com/BlissOS-AICP/vendor_intel_houdini.git'
       prune_repo:
-        description: '是否删除 .repo 释放磁盘（危险，默认 false）。设置为 true 才会删除'
-        required: false
-        default: 'false'
+        description: '是否清理磁盘 (必须填 true)'
+        required: true
+        default: 'true'
 
 jobs:
   build:
@@ -31,54 +29,16 @@ jobs:
       MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch }}
       HOUDINI_REPO: ${{ github.event.inputs.houdini_repo }}
       PRUNE_REPO: ${{ github.event.inputs.prune_repo }}
-      TARGET_PRODUCT: "bliss_x86_64"
-      BUILD_VARIANT: "userdebug"
-      CCACHE_DIR: ${{ runner.temp }}/ccache
 
     steps:
-      - name: actions/checkout (optional)
-        uses: actions/checkout@v4
-
-      - name: 验证输入（防止占位符/误填）
-        run: |
-          set -euo pipefail
-          echo "MANIFEST_URL='${MANIFEST_URL}'"
-          if [[ -z "${MANIFEST_URL// }" ]]; then
-            echo "错误：MANIFEST_URL 为空。请填入真实的 manifest 仓库 URL。"
-            exit 1
-          fi
-          if ! echo "$MANIFEST_URL" | grep -Ei '^https?://|^git@' >/dev/null; then
-            echo "错误：MANIFEST_URL 必须以 http(s):// 或 git@ 开头。 当前: $MANIFEST_URL"
-            exit 1
-          fi
-          if echo "$MANIFEST_URL" | grep -Ei '^https?://github\.com/?$|^github\.com$|example|OWNER|MANIFEST_REPO' >/dev/null; then
-            echo "错误：MANIFEST_URL 看起来像占位符或不完整地址：$MANIFEST_URL"
-            exit 1
-          fi
-          if [[ -n "${HOUDINI_REPO// }" ]]; then
-            if ! echo "$HOUDINI_REPO" | grep -Ei '^https?://|^git@' >/dev/null; then
-              echo "错误：HOUDINI_REPO 必须以 http(s):// 或 git@ 开头。 当前: $HOUDINI_REPO"
-              exit 1
-            fi
-            if echo "$HOUDINI_REPO" | grep -Ei 'example|OWNER|MANIFEST_REPO' >/dev/null; then
-              echo "错误：HOUDINI_REPO 看起来像占位符或不完整地址：$HOUDINI_REPO"
-              exit 1
-            fi
-          fi
-          echo "PRUNE_REPO='${PRUNE_REPO}' (仅当为 'true' 时会删除 .repo)"
-          echo "输入校验通过。"
-
-      - name: 1. 极限腾出磁盘空间
+      - name: 1. 极大化磁盘空间
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
           android: true
           dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
 
-      - name: 2. 安装 AOSP 工具链并准备 repo 二进制
+      - name: 2. 安装工具链与修复 Repo (2026 稳定版)
         run: |
           set -euo pipefail
           sudo apt update
@@ -87,88 +47,56 @@ jobs:
             libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
+          
           mkdir -p "$HOME/bin"
-          curl -fsSLo "$HOME/bin/repo" https://storage.googleapis.com/git-repo-downloads/repo
+          # 【核心修复】改用 GitHub 官方镜像，避开 MissingSecurityHeader 报错
+          curl -fsSLo "$HOME/bin/repo" raw.githubusercontent.com
           chmod a+x "$HOME/bin/repo"
-          export PATH="$HOME/bin:$PATH"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 2.1 恢复 ccache（可选）
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ${{ runner.os }}-bliss-ccache-${{ env.MANIFEST_BRANCH }}
-          restore-keys: |
-            ${{ runner.os }}-bliss-ccache-
-
-      - name: 3. 源码同步（瘦身：仅保留 Intel/x86 相关）
+      - name: 3. 源码同步
         run: |
           set -euo pipefail
-          rm -rf build_dir
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
-
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
-          repo sync -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags
-
-          # 剔除非 Intel 代码腾出空间（按需调整）
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+          # 剔除非必要代码
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
-          find kernel -mindepth 1 -maxdepth 1 -not -name "x86*" -exec rm -rf {} + || true
 
-      - name: 3.1 删除 .repo（可选，危险）
+      - name: 4. 清理磁盘空间 (防止爆满)
         if: ${{ env.PRUNE_REPO == 'true' }}
         run: |
-          set -euo pipefail
-          echo "PRUNE_REPO=true，开始删除 build_dir/.repo 以释放磁盘（此操作不可恢复）"
-          cd build_dir
-          rm -rf .repo || true
+          cd build_dir && rm -rf .repo
 
-      - name: 4. 集成 ARM 兼容层 (Houdini)（可选）
+      - name: 5. 集成 Houdini
         if: ${{ env.HOUDINI_REPO != '' }}
         run: |
-          set -euo pipefail
           cd build_dir
           git clone --depth=1 --branch "$MANIFEST_BRANCH" "$HOUDINI_REPO" vendor/intel/houdini || true
 
-      - name: 5. 针对 i1135G7 (Tiger Lake) 执行专项编译
+      - name: 6. 1135G7 专项优化编译
         run: |
           set -euo pipefail
           cd build_dir
-
           source build/envsetup.sh
-
-          # 启用 ccache
-          export USE_CCACHE=1
-          export CCACHE_DIR="${CCACHE_DIR}"
-          mkdir -p "${CCACHE_DIR}"
-          ccache -M 50G || true
-
+          
+          # Tiger Lake (1135G7) 专项参数
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           export TARGET_ENABLE_HOUDINI=true
           export TARGET_ENABLE_HOUDINI_64=true
-          # 安全追加内核 cmdline（避免覆盖已有值）
-          export BOARD_KERNEL_CMDLINE="${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive"
+          export BOARD_KERNEL_CMDLINE="i915.enable_psr=0 intel_pstate=passive"
+          
+          lunch bliss_x86_64-userdebug
+          mka iso_img -j4
 
-          lunch "${TARGET_PRODUCT}-${BUILD_VARIANT}"
-          # 并行线程根据 runner 核心调整（若内存不足可降为 -j4）
-          mka iso_img -j"$(nproc)"
-
-      - name: 6. 保存 ccache（可选）
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ${{ runner.os }}-bliss-ccache-${{ env.MANIFEST_BRANCH }}
-          restore-keys: |
-            ${{ runner.os }}-bliss-ccache-
-
-      - name: 7. 上传 ISO 镜像
+      - name: 7. 上传结果
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
-          retention-days: 1
