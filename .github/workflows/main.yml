@@ -132,8 +132,8 @@ jobs:
           # 我们尝试 trunk_staging 这个标准发布标签，如果失败则回退到旧格式
           (lunch bliss_x86_64-trunk_staging-userdebug || lunch bliss_x86_64-userdebug) && \
           mka iso_img -j$(nproc)"
-          
 
+          
       - name: 7. 上传结果
         if: success()
         uses: actions/upload-artifact@v4
