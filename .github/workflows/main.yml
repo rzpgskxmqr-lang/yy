@@ -1,0 +1,81 @@
+name: Build BlissOS 17 (Intel Surface Optimized)
+
+on:
+  workflow_dispatch: # 允许手动点击运行
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. 极大化磁盘空间 (关键优化)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      - name: 2. 安装 AOSP 编译工具链
+        run: |
+          sudo apt update
+          sudo apt install -y bc bison build-essential ccache curl flex g++-multilib \
+            gcc-multilib git git-lfs gnupg gperf lib32readline-dev lib32z1-dev \
+            libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
+            lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 openjdk-17-jdk
+          
+          mkdir -p ~/bin
+          curl storage.googleapis.com > ~/bin/repo
+          chmod a+x ~/bin/repo
+          sudo ln -sf ~/bin/repo /usr/bin/repo
+
+      - name: 3. 源码同步 (仅保留 Intel/Surface 必要代码)
+        run: |
+          mkdir build_dir && cd build_dir
+          git config --global user.email "build@bliss.com"
+          git config --global user.name "Builder"
+          
+          repo init -u github.com -b bliss-v17.x --depth=1
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+          
+          # 物理剔除非 Intel/Surface 相关代码以节省空间
+          rm -rf device/generic/amd*
+          rm -rf vendor/amd
+          find kernel -mindepth 1 -maxdepth 1 -not -name "x86*" -exec rm -rf {} +
+
+      - name: 4. 集成 ARM 兼容层 (Houdini)
+        run: |
+          cd build_dir
+          git clone github.com -b bliss-v17.x vendor/intel/houdini --depth=1
+
+      - name: 5. 执行 1135G7 专项优化编译
+        run: |
+          cd build_dir
+          # 为了给 100GB 的编译产物留出空间，必须删除 .repo
+          rm -rf .repo
+          
+          source build/envsetup.sh
+          
+          # 设置 i1135G7 (Tiger Lake) 与 Surface 核心变量
+          export TARGET_CPU_VARIANT=tigerlake
+          export BOARD_GPU_DRIVERS="iris"
+          export TARGET_SURFACE=true
+          export BLISS_BUILD_VARIANT=gapps
+          export TARGET_ENABLE_HOUDINI=true
+          export TARGET_ENABLE_HOUDINI_64=true
+          # 针对 11 代核显的防闪屏补丁
+          export BOARD_KERNEL_CMDLINE+=" i915.enable_psr=0 intel_pstate=passive"
+          
+          lunch bliss_x86_64-userdebug
+          mka iso_img -j4
+
+      - name: 6. 上传 ISO 镜像
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlissOS-17-Surface-i1135G7
+          path: build_dir/out/target/product/x86_64/*.iso
+          retention-days: 1
