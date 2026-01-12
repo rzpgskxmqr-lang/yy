@@ -6,11 +6,12 @@ on:
       manifest_url:
         description: '完整的 Manifest URL'
         required: true
+        # 修正建议：启动时请输入 github.com
         default: 'github.com'
       manifest_branch:
         description: '源码分支'
         required: true
-        # 【修正 1】：将默认分支改为远程存在的 universe-x86
+        # 【核心修正】：默认值改为远程存在的 universe-x86
         default: 'universe-x86'
       prune_repo:
         description: '清理磁盘释放空间 (必须填 true)'
@@ -31,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$MANIFEST_URL" == "github.com" || -z "$MANIFEST_URL" ]]; then
-            echo "错误：请填写完整的 https 仓库地址"
+            echo "错误：请填写完整的 https 仓库地址，不能只填 github.com"
             exit 1
           fi
 
@@ -53,7 +54,13 @@ jobs:
             python3-setuptools openjdk-17-jdk
 
           mkdir -p "$HOME/bin"
-          curl -fsSL storage.googleapis.com > "$HOME/bin/repo"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
+          
+          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
+            echo "Google 源不可用，切换至 GitHub Raw 原始脚本路径..."
+            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
+          fi
+          
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
@@ -64,7 +71,7 @@ jobs:
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 【修正 2】：将尝试逻辑修改为远程实际存在的分支名
+          # 【核心修正】：将备用分支修改为 2026 年实际存在的 universe-x86 和 master
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 || \
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 || \
           repo init -u "$MANIFEST_URL" -b master --depth=1
@@ -78,7 +85,7 @@ jobs:
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
           
           if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "正在删除 .repo 以释放空间..."
+            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
             rm -rf .repo
           fi
 
@@ -86,13 +93,13 @@ jobs:
         run: |
           set -euo pipefail
           cd build_dir
-          # 使用 bash 显式执行 source 确保环境变量生效
+          # 显式使用 bash 执行 source 以确保环境加载正确
           /bin/bash -c "source build/envsetup.sh && \
           export TARGET_CPU_VARIANT='tigerlake' && \
           export BOARD_GPU_DRIVERS='iris' && \
           export TARGET_SURFACE=true && \
           export BLISS_BUILD_VARIANT='gapps' && \
-          export BOARD_KERNEL_CMDLINE='i915.enable_psr=0 intel_pstate=passive' && \
+          export BOARD_KERNEL_CMDLINE='${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive' && \
           lunch bliss_x86_64-userdebug && \
           mka iso_img -j$(nproc)"
 
