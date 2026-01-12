@@ -6,10 +6,12 @@ on:
       manifest_url:
         description: '完整的 Manifest URL'
         required: true
+        # 还原回你要求的初始占位符
         default: 'github.com'
       manifest_branch:
         description: '源码分支'
         required: true
+        # 默认值改为远程存在的 universe-x86
         default: 'universe-x86'
       prune_repo:
         description: '清理磁盘释放空间 (必须填 true)'
@@ -30,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$MANIFEST_URL" == "github.com" || -z "$MANIFEST_URL" ]]; then
-            echo "错误：请填写完整的 https 仓库地址"
+            echo "错误：请填写完整的 https 仓库地址，不能只填 github.com"
             exit 1
           fi
 
@@ -41,7 +43,7 @@ jobs:
           android: true
           dotnet: true
 
-      - name: 3. 安装工具链与修复 Repo
+      - name: 3. 安装工具链与修复 Repo (2026 路径修正版)
         run: |
           set -euo pipefail
           sudo apt update
@@ -53,34 +55,41 @@ jobs:
 
           mkdir -p "$HOME/bin"
           curl -fsSL storage.googleapis.com > "$HOME/bin/repo"
+          
+          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
+            echo "Google 源不可用，切换至 GitHub Raw 原始脚本路径..."
+            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
+          fi
+          
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (语法修正版)
+      - name: 4. 源码同步 (2026 自动识别排除修复版)
         run: |
           set -euo pipefail
           mkdir -p build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 初始化逻辑
+          # 初始化：优先使用输入的分支，失败则尝试回退
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
+          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
           repo init -u "$MANIFEST_URL" -b master --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm
           
-          # 【核心修正】：使用 printf 替代 cat <<EOF 避免潜在的 Shell 变量解析语法冲突
+          # 【核心修复】：使用 printf 确保生成合法的 XML，解决 no element found 错误
           mkdir -p .repo/local_manifests
           
-          # 尝试获取真实的项目名，若失败则赋默认值
+          # 动态检测项目名，若 repo list 失败则强制指定一个可能的默认值
           REAL_PROJ_NAME=$(repo list -n | grep "vendor/prebuilts" || echo "platform/vendor/prebuilts")
           
-          # 写入格式严谨的 XML
           printf '<?xml version="1.0" encoding="UTF-8"?>\n<manifest>\n  <remove-project name="%s" />\n</manifest>\n' "$REAL_PROJ_NAME" > .repo/local_manifests/remove_broken.xml
           
-          echo "已排除项目: $REAL_PROJ_NAME"
+          echo "检测到并自动排除项目: $REAL_PROJ_NAME"
           
+          # 清理锁文件
           find .repo -name "*.lock" -delete || true
           
-          # 使用 --detach 解决 refs/heads/universe 找不到的问题
+          # --detach: 关键参数，忽略远程分支引用不存在的问题
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
 
@@ -88,10 +97,12 @@ jobs:
         run: |
           set -euo pipefail
           cd build_dir
+          # 物理删除所有非 Intel 厂商的设备和供应商文件夹
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
           rm -rf vendor/nvidia* vendor/qualcomm* 2>/dev/null || true
           
           if [[ "$PRUNE_REPO" == "true" ]]; then
+            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
             rm -rf .repo
           fi
 
@@ -99,11 +110,13 @@ jobs:
         run: |
           set -euo pipefail
           cd build_dir
+          # 显式使用 bash 执行 source 以确保环境加载正确
           /bin/bash -c "source build/envsetup.sh && \
           export TARGET_CPU_VARIANT='tigerlake' && \
           export BOARD_GPU_DRIVERS='iris' && \
           export TARGET_SURFACE=true && \
           export BLISS_BUILD_VARIANT='gapps' && \
+          export BOARD_KERNEL_CMDLINE='${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive' && \
           lunch bliss_x86_64-userdebug && \
           mka iso_img -j$(nproc)"
 
