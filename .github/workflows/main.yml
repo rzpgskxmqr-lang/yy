@@ -1,98 +1,120 @@
-name: Build BlissOS 17 (Surface i1135G7 2026-Final)
+name: Build BlissOS 17 (Surface i1135G7 Stable-Fix)
 
 on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: '源码清单地址'
+        description: '请输入完整的 Manifest URL (例如 github.com)'
         required: true
         default: 'github.com'
       manifest_branch:
-        description: '源码分支'
+        description: '分支 (v17.x)'
         required: true
         default: 'v17.x'
       prune_repo:
-        description: '关键：必须为 true 才能释放 300GB 磁盘'
+        description: '是否删除 .repo 以释放磁盘 (必须填 true 才能跑通)'
         required: true
         default: 'true'
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360 # GitHub 免费版限时 6 小时
+    timeout-minutes: 360
+    env:
+      # 将输入转为环境变量，避免在 run 脚本中直接引用时产生转义问题
+      MANIFEST_URL: ${{ github.event.inputs.manifest_url }}
+      MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch }}
+      PRUNE_REPO: ${{ github.event.inputs.prune_repo }}
 
     steps:
-      - name: 1. 深度清理磁盘空间 (核心步骤)
-        # 为 Android 14 腾出约 150GB 空间
+      - name: 1. 验证输入合法性
+        run: |
+          set -euo pipefail
+          if [[ "$MANIFEST_URL" == "github.com" || -z "$MANIFEST_URL" ]]; then
+            echo "错误：请提供完整的仓库 URL，不能仅填写 github.com"
+            exit 1
+          fi
+
+      - name: 2. 极大化磁盘空间
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
           android: true
           dotnet: true
 
-      - name: 2. 安装 AOSP 2026 工具链与修复 Repo (解决 HTML 报错)
+      - name: 3. 安装工具链与修复 Repo (增加内容校验)
         run: |
           set -euo pipefail
           sudo apt update
-          # 在 Ubuntu 24.04 中，python3-setuptools 替代了 python3-distutils
           sudo apt install -y bc bison build-essential ccache curl flex g++-multilib \
             gcc-multilib git git-lfs gnupg gperf lib32readline-dev lib32z1-dev \
             libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
-          
+
           mkdir -p "$HOME/bin"
-          # 【2026 修复】：使用 GitHub 官方 Raw 地址，避开之前报错的 Google 403 页面
-          curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
           
-          # 内容完整性二次校验
-          if head -c 5 "$HOME/bin/repo" | grep -q "<"; then
-            echo "错误：下载到了网页而非脚本。正在尝试清华镜像..."
-            curl -fsSL mirrors.tuna.tsinghua.edu.cn > "$HOME/bin/repo"
+          # 使用官方稳定 URL 下载 repo
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
+          
+          # 【核心检查】：如果下载到的是 HTML 网页，说明地址被重定向或失效，改用 GitHub Raw
+          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
+            echo "Google 源下载异常，尝试 GitHub Raw 备份源..."
+            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
+          fi
+          
+          # 最终校验：如果还是网页，则报错
+          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
+             echo "错误：无法获取正确的 repo 脚本，请检查网络。"
+             head -n 5 "$HOME/bin/repo"
+             exit 1
           fi
           
           chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
 
-      - name: 3. 源码同步 (极简 Intel/Surface 模式)
+      - name: 4. 源码同步 (极简 Intel 模式)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 使用 2026 年验证过的 v17.x 分支 (Android 14)
-          repo init -u "${{ github.event.inputs.manifest_url }}" -b "${{ github.event.inputs.manifest_branch }}" --depth=1
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 4. 磁盘生存清理 (如果不删 .repo 编译必败)
-        if: ${{ github.event.inputs.prune_repo == 'true' }}
+      - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
         run: |
-          cd build_dir && rm -rf .repo
+          set -euo pipefail
+          cd build_dir
+          # 物理去除非 Intel 代码
+          rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
+          
+          if [[ "$PRUNE_REPO" == "true" ]]; then
+            echo "警告：正在删除 .repo 目录以释放磁盘空间 (此操作不可撤销)"
+            rm -rf .repo
+          fi
 
-      - name: 5. 针对 Surface i1135G7 执行专项编译
+      - name: 6. 执行 i1135G7 (Tiger Lake) 专项优化编译
         run: |
           set -euo pipefail
           cd build_dir
           source build/envsetup.sh
           
-          # 针对 Tiger Lake (1135G7) 的 Iris Xe 显卡加速
+          # 架构优化参数
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
-          
-          # 适配 Surface 特有硬件 (内核补丁与触控)
-          export TARGET_SPECIAL_VARIANT="surface"
-          export BOARD_IS_SURFACE_BUILD=true
+          export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           
-          # 核心修复：解决 Surface Pro 8/9 等 11 代酷睿常见的屏幕闪烁问题
-          export BOARD_KERNEL_CMDLINE="i915.enable_psr=0 intel_pstate=passive"
+          # 安全追加内核参数：解决 Surface 11代 CPU 闪屏问题
+          export BOARD_KERNEL_CMDLINE="${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive"
           
-          # 选择目标并开始构建
           lunch bliss_x86_64-userdebug
+          # 并行数限制为 4，防止内存溢出
           mka iso_img -j4
 
-      - name: 6. 上传 ISO 镜像
+      - name: 7. 上传产物
         if: success()
         uses: actions/upload-artifact@v4
         with:
