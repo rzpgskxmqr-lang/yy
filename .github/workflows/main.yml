@@ -1,4 +1,3 @@
-
 name: Build BlissOS 17 (Surface i1135G7 2026-Final)
 
 on:
@@ -7,10 +6,12 @@ on:
       manifest_url:
         description: '完整的 Manifest URL'
         required: true
+        # 修正：必须提供完整 URL
         default: 'github.com'
       manifest_branch:
-        description: '源码分支'
+        description: '源码分支 (根据 2026 仓库现状建议使用 universe-x86)'
         required: true
+        # 修正：ruby-v17.x 不存在，改为 universe-x86
         default: 'universe-x86'
       prune_repo:
         description: '清理磁盘释放空间 (必须填 true)'
@@ -42,7 +43,7 @@ jobs:
           android: true
           dotnet: true
 
-      - name: 3. 安装工具链与修复 Repo (路径修正版)
+      - name: 3. 安装工具链与修复 Repo (2026 路径修正版)
         run: |
           set -euo pipefail
           sudo apt update
@@ -53,27 +54,25 @@ jobs:
             python3-setuptools openjdk-17-jdk
 
           mkdir -p "$HOME/bin"
+          curl -fsSL storage.googleapis.com > "$HOME/bin/repo"
           
-          # 修正 400 错误：使用 Google 官方源下载，并添加容错
-          curl -fsSL storage.googleapis.com > "$HOME/bin/repo" || echo "Google 下载失败"
-          
-          # 核心修复：如果 Google 源返回错误码或文件为空，切换到正确的 GitHub Raw 完整路径
-          if [ ! -s "$HOME/bin/repo" ] || grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "正在切换至 GitHub 官方维护的 Repo 原始路径..."
+          # 核心修正：修复原脚本 raw.githubusercontent.com 后面缺失的路径，防止下载到 HTML 报错页
+          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
+            echo "Google 源不可用，切换至 GitHub 官方路径..."
             curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
           fi
           
           chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (2026 分支智能匹配)
+      - name: 4. 源码同步 (基于 2026 实际分支)
         run: |
           set -euo pipefail
           mkdir -p build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 修正初始化逻辑：优先尝试用户输入，若失败则尝试 universe-x86（根据 2026 仓库现状）
+          # 修正逻辑：优先尝试用户输入的分支，失败则回退到已证实的 universe-x86
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 --no-clone-bundle || \
           repo init -u "github.com" -b universe-x86 --depth=1 --no-clone-bundle
           
@@ -83,11 +82,10 @@ jobs:
         run: |
           set -euo pipefail
           cd build_dir
-          # 物理去除非 Intel 平台代码腾出空间
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
           
           if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
+            echo "正在删除 .repo 释放空间..."
             rm -rf .repo
           fi
 
@@ -97,13 +95,12 @@ jobs:
           cd build_dir
           source build/envsetup.sh
           
-          # 针对 Tiger Lake (1135G7) 的 Iris Xe 显卡加速
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           
-          # 核心修正：解决 Surface Pro 8/9/Laptop 4 等 11 代酷睿屏幕闪烁的关键参数
+          # 解决 11 代酷睿闪屏的核心参数
           export BOARD_KERNEL_CMDLINE="${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive"
           
           lunch bliss_x86_64-userdebug
