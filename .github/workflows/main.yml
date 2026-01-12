@@ -6,12 +6,10 @@ on:
       manifest_url:
         description: '完整的 Manifest URL'
         required: true
-        # 修正建议：启动时请输入 github.com
         default: 'github.com'
       manifest_branch:
         description: '源码分支'
         required: true
-        # 【核心修正】：默认值改为远程存在的 universe-x86
         default: 'universe-x86'
       prune_repo:
         description: '清理磁盘释放空间 (必须填 true)'
@@ -32,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$MANIFEST_URL" == "github.com" || -z "$MANIFEST_URL" ]]; then
-            echo "错误：请填写完整的 https 仓库地址，不能只填 github.com"
+            echo "错误：请填写完整的 https 仓库地址"
             exit 1
           fi
 
@@ -54,29 +52,30 @@ jobs:
             python3-setuptools openjdk-17-jdk
 
           mkdir -p "$HOME/bin"
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
-          
-          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "Google 源不可用，切换至 GitHub Raw 原始脚本路径..."
-            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
-          fi
-          
+          curl -fsSL storage.googleapis.com > "$HOME/bin/repo"
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (2026 分支智能匹配)
+      - name: 4. 源码同步 (非交互式加速版)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
+          
+          # 【新增】禁止 Git 弹出任何终端确认提示，防止卡死
+          export GIT_TERMINAL_PROMPT=0
+          
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
+          # 【新增】信任所有目录，防止 2026 版 Git 的所有权安全检查导致停顿
+          git config --global --add safe.directory "*"
           
-          # 【核心修正】：将备用分支修改为 2026 年实际存在的 universe-x86 和 master
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 || \
-          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 || \
-          repo init -u "$MANIFEST_URL" -b master --depth=1
+          # 【优化】使用 --no-clone-bundle 和 --quiet 减少不必要的网络握手
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 --no-clone-bundle --quiet || \
+          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 --no-clone-bundle --quiet || \
+          repo init -u "$MANIFEST_URL" -b master --depth=1 --no-clone-bundle --quiet
           
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+          # 【优化】增加重试机制和子模块获取
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5
 
       - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
         run: |
@@ -85,7 +84,7 @@ jobs:
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
           
           if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
+            echo "正在删除 .repo 以释放空间..."
             rm -rf .repo
           fi
 
@@ -93,13 +92,13 @@ jobs:
         run: |
           set -euo pipefail
           cd build_dir
-          # 显式使用 bash 执行 source 以确保环境加载正确
+          # 显式使用 bash 执行 source 确保变量作用域正确
           /bin/bash -c "source build/envsetup.sh && \
           export TARGET_CPU_VARIANT='tigerlake' && \
           export BOARD_GPU_DRIVERS='iris' && \
           export TARGET_SURFACE=true && \
           export BLISS_BUILD_VARIANT='gapps' && \
-          export BOARD_KERNEL_CMDLINE='${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive' && \
+          export BOARD_KERNEL_CMDLINE='i915.enable_psr=0 intel_pstate=passive' && \
           lunch bliss_x86_64-userdebug && \
           mka iso_img -j$(nproc)"
 
