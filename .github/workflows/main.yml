@@ -1,8 +1,5 @@
 name: Build BlissOS 17 (Surface i1135G7 2026-Final)
 
-
-name: Build BlissOS 17 (Surface i1135G7 2026-Final)
-
 on:
   workflow_dispatch:
     inputs:
