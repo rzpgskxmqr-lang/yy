@@ -57,7 +57,7 @@ jobs:
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (源头精简拦截修复版)
+      - name: 4. 源码同步 (2026 语法加固与拦截版)
         run: |
           set -euo pipefail
           mkdir -p build_dir && cd build_dir
@@ -77,17 +77,21 @@ jobs:
             -g "default,-arm,-mips,-darwin,-tests" || \
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g "default,-arm,-mips,-darwin,-tests"
 
-          # 【核心修正】：安全剔除无关厂商，防止 mismatched tag 报错
-          echo "执行源头拦截：安全剔除无关项目..."
+          # 【核心拦截】：安全剔除无关项目 (采用 Python 块匹配逻辑防止 XML 损坏)
+          echo "执行源头拦截：正在精准剔除无关硬件项目..."
           cd .repo/manifests
-          cp default.xml default.xml.bak
-          # 使用 grep -Ev 排除包含特定关键字的项目行，这种方式比 sed 更能保护 XML 结构
-          grep -Ev "hisi|hisilicon|qcom|mediatek|mtk|nvidia|amlogic|exynos|broadcom" default.xml.bak > default.xml
-          
-          # 确保 XML 结束标签完整，防止误删最后一行导致的解析错误
-          if ! tail -n 1 default.xml | grep -q "</manifest>"; then
-              echo "</manifest>" >> default.xml
-          fi
+          python3 -c '
+          import os, re
+          keywords = ["hisi", "hisilicon", "qcom", "mediatek", "mtk", "nvidia", "amlogic", "exynos", "broadcom"]
+          if os.path.exists("default.xml"):
+              with open("default.xml", "r") as f:
+                  content = f.read()
+              # 正则匹配完整的 <project ... /> 标签块，即使跨行也能精准删除
+              pattern = re.compile(r"<project\s+[^>]*?name=\"([^\"]*?(?:" + "|".join(keywords) + r")[^\"]*?)\"[^>]*?/>", re.S)
+              new_content = pattern.sub("", content)
+              with open("default.xml", "w") as f:
+                  f.write(new_content)
+          '
           cd ../..
 
           # 同步源码
@@ -136,3 +140,4 @@ jobs:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
           retention-days: 1
+
