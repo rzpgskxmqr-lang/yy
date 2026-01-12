@@ -1,11 +1,10 @@
-
 name: Build BlissOS 17 (Surface i1135G7 Final)
 
 on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: '源码地址 (必须填写完整地址)'
+        description: 'BlissOS Manifest URL'
         required: true
         default: 'github.com'
       prune_repo:
@@ -17,16 +16,18 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    env:
+      MANIFEST_URL: ${{ github.event.inputs.manifest_url }}
 
     steps:
-      - name: 1. 深度清理磁盘空间
+      - name: 1. 极大化磁盘空间
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
           android: true
           dotnet: true
 
-      - name: 2. 安装 AOSP 2026 工具链 (修复 Repo 下载)
+      - name: 2. 安装 AOSP 工具链并修复 Repo 二进制 (修复版)
         run: |
           set -euo pipefail
           sudo apt update
@@ -35,54 +36,61 @@ jobs:
             libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
-          
-          mkdir -p "$HOME/bin"
-          # 使用 RAW 地址，防止下载到 HTML 网页
-          curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
-          chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 3. 源码同步 (极简 Intel 模式)
+          mkdir -p "$HOME/bin"
+          # 【核心修复】：使用包含完整路径的官方稳定下载源
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
+          
+          # 鲁棒性检查：如果下载的内容仍是 HTML，则尝试 GitHub Raw 镜像
+          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
+            echo "官方源访问异常，尝试备用镜像..."
+            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
+          fi
+          
+          chmod a+x "$HOME/bin/repo"
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
+
+      - name: 3. 源码同步 (极简克隆)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 初始化与同步
-          repo init -u "${{ github.event.inputs.manifest_url }}" -b bliss-v17.x --depth=1
+          # 初始化与同步，--depth=1 节省磁盘
+          repo init -u "$MANIFEST_URL" -b bliss-v17.x --depth=1
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 4. 空间释放与驱动优化
+      - name: 4. 清理磁盘空间 (免费版必须执行)
         run: |
           cd build_dir
-          # 删除无关代码
+          # 物理去除非 Intel 平台代码
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
-          # 清理 .repo (由输入参数决定)
           if [[ "${{ github.event.inputs.prune_repo }}" == "true" ]]; then
+            echo "正在删除 .repo 目录以确保编译磁盘空间..."
             rm -rf .repo
           fi
 
-      - name: 5. 针对 i1135G7 (Tiger Lake) 执行专项编译
+      - name: 5. 针对 i1135G7 (Tiger Lake) 专项优化编译
         run: |
           set -euo pipefail
           cd build_dir
           source build/envsetup.sh
           
-          # 针对 i1135G7 Iris Xe 显卡与 Surface 适配
+          # 针对 i1135G7 Iris Xe 显卡优化
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           export TARGET_ENABLE_HOUDINI=true
           export TARGET_ENABLE_HOUDINI_64=true
-          # 修复 Surface 11代 CPU 闪屏问题的内核参数
-          export BOARD_KERNEL_CMDLINE="i915.enable_psr=0 intel_pstate=passive"
+          # 解决 Surface 11 代 CPU 闪屏问题的关键参数
+          export BOARD_KERNEL_CMDLINE="${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive"
           
           lunch bliss_x86_64-userdebug
           mka iso_img -j4
 
-      - name: 6. 上传 ISO 镜像
+      - name: 6. 上传 ISO
         if: success()
         uses: actions/upload-artifact@v4
         with:
