@@ -63,31 +63,40 @@ jobs:
           
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
-
-      - name: 4. 源码同步 (2026 自动识别排除修复版)
+          
+      - name: 4. 源码同步 (2026 组排除稳健版)
         run: |
           set -euo pipefail
           mkdir -p build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 1. 初始化
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
-          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
-          repo init -u "$MANIFEST_URL" -b master --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm
+          # 1. 【排除庞大组件的核心】：在 -g 参数中使用减号排除不需要的组
+          # 这样在下载阶段就会跳过：预编译(pdk/vts/vndk)、AMD、Nvidia、ARM、高通等不相关厂商内容
+          echo "开始初始化并排除非必要组件..."
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 \
+            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
+          repo init -u "$MANIFEST_URL" -b master --depth=1 \
+            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm
           
-          # 2. 【核心修复】：彻底放弃不稳定的 remove-project XML 逻辑
-          # 这样就不会报 "remove-project 元素指定不存在的项目" 错误了
-          rm -rf .repo/local_manifests/remove_broken.xml || true
+          # 2. 【核心修复】：彻底删除 local_manifests 目录
+          # 2026 版 Repo 对 remove-project 校验极严，只要清单里不存在就会报错。
+          # 既然上面 -g 已经排除了一大部分，剩余的故障仓库我们直接物理删除。
+          rm -rf .repo/local_manifests || true
           
           # 3. 清理锁文件
           find .repo -name "*.lock" -delete || true
           
-          # 4. 执行同步（使用 --fail-fast 确保快速反馈）
-          # 如果同步过程中 vendor/prebuilts 报错，我们用 -f (force) 继续忽略它
-          echo "开始同步..."
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach -f || \
-          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach -f
+          # 4. 执行同步
+          # --detach: 强制解决 refs/heads/universe 找不到的问题
+          echo "开始同步（已开启默认强制继续模式）..."
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
+          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
+
+          # 5. 【手动排除】：同步后物理删除特定的故障目录，绕过 XML 校验报错
+          rm -rf vendor/prebuilts
+
+      - 
 
           # 5. 【手动排除】：同步完如果产生了 vendor/prebuilts 故障目录，直接物理删除
           rm -rf vendor/prebuilts
