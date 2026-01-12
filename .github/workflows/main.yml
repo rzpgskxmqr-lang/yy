@@ -6,12 +6,10 @@ on:
       manifest_url:
         description: '完整的 Manifest URL'
         required: true
-        # 修正建议：启动时请输入 github.com
         default: 'github.com'
       manifest_branch:
         description: '源码分支'
         required: true
-        # 【核心修正】：默认值改为远程存在的 universe-x86
         default: 'universe-x86'
       prune_repo:
         description: '清理磁盘释放空间 (必须填 true)'
@@ -32,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$MANIFEST_URL" == "github.com" || -z "$MANIFEST_URL" ]]; then
-            echo "错误：请填写完整的 https 仓库地址，不能只填 github.com"
+            echo "错误：请填写完整的 https 仓库地址"
             exit 1
           fi
 
@@ -43,7 +41,7 @@ jobs:
           android: true
           dotnet: true
 
-      - name: 3. 安装工具链与修复 Repo (2026 路径修正版)
+      - name: 3. 安装工具链与修复 Repo
         run: |
           set -euo pipefail
           sudo apt update
@@ -55,47 +53,34 @@ jobs:
 
           mkdir -p "$HOME/bin"
           curl -fsSL storage.googleapis.com > "$HOME/bin/repo"
-          
-          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "Google 源不可用，切换至 GitHub Raw 原始脚本路径..."
-            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
-          fi
-          
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (2026 自动识别排除修复版)
+      - name: 4. 源码同步 (语法修正版)
         run: |
           set -euo pipefail
           mkdir -p build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 初始化：优先使用输入的分支，失败则尝试回退
+          # 初始化逻辑
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
-          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
           repo init -u "$MANIFEST_URL" -b master --depth=1 -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm
           
-          # 【核心修复】：改用覆盖式生成，确保 XML 结构即使在 list 失败时也合法
+          # 【核心修正】：使用 printf 替代 cat <<EOF 避免潜在的 Shell 变量解析语法冲突
           mkdir -p .repo/local_manifests
           
-          # 尝试获取真实的 vendor/prebuilts 路径，如果 repo list 报错则使用常见默认值
-          # 这能防止出现 "no element found" 的空 XML 错误
+          # 尝试获取真实的项目名，若失败则赋默认值
           REAL_PROJ_NAME=$(repo list -n | grep "vendor/prebuilts" || echo "platform/vendor/prebuilts")
           
-          cat <<EOF > .repo/local_manifests/remove_broken.xml
-<?xml version="1.0" encoding="UTF-8"?>
-<manifest>
-  <remove-project name="$REAL_PROJ_NAME" />
-</manifest>
-EOF
-          echo "已自动排除可能导致远程引用的项目: $REAL_PROJ_NAME"
+          # 写入格式严谨的 XML
+          printf '<?xml version="1.0" encoding="UTF-8"?>\n<manifest>\n  <remove-project name="%s" />\n</manifest>\n' "$REAL_PROJ_NAME" > .repo/local_manifests/remove_broken.xml
           
-          # 清理锁文件并强制同步
+          echo "已排除项目: $REAL_PROJ_NAME"
+          
           find .repo -name "*.lock" -delete || true
           
-          # --detach: 强制忽略 Manifest 中不存在的远程分支引用 (针对宇宙分支错误的关键修复)
-          # --force-sync: 强制修复 Shared project 冲突
+          # 使用 --detach 解决 refs/heads/universe 找不到的问题
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
 
@@ -103,12 +88,10 @@ EOF
         run: |
           set -euo pipefail
           cd build_dir
-          # 物理删除所有非 Intel 厂商的设备和供应商文件夹
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
           rm -rf vendor/nvidia* vendor/qualcomm* 2>/dev/null || true
           
           if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
             rm -rf .repo
           fi
 
@@ -116,13 +99,11 @@ EOF
         run: |
           set -euo pipefail
           cd build_dir
-          # 显式使用 bash 执行 source 以确保环境加载正确
           /bin/bash -c "source build/envsetup.sh && \
           export TARGET_CPU_VARIANT='tigerlake' && \
           export BOARD_GPU_DRIVERS='iris' && \
           export TARGET_SURFACE=true && \
           export BLISS_BUILD_VARIANT='gapps' && \
-          export BOARD_KERNEL_CMDLINE='${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive' && \
           lunch bliss_x86_64-userdebug && \
           mka iso_img -j$(nproc)"
 
