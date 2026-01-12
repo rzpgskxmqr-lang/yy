@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: 'Manifest 仓库 URL（必须填写完整 URL，例如 https://github.com/YourOrg/manifest.git 或 git@github.com:YourOrg/manifest.git）'
+        description: https://github.com/BlissOS/platform_manifest.git
         required: true
         default: ''
       manifest_branch:
@@ -14,7 +14,7 @@ on:
         required: false
         default: 'bliss-v17.x'
       houdini_repo:
-        description: 'Houdini 仓库 URL（可选，留空表示跳过）'
+        description: https://github.com/BlissOS-AICP/vendor_intel_houdini.git
         required: false
         default: ''
       prune_repo:
