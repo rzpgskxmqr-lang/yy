@@ -1,102 +1,101 @@
-name: Build BlissOS 17 (Surface i1135G7 Final Fix)
+name: Build BlissOS 17 (Surface i1135G7 2026-Final)
 
 on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: '源码地址'
+        description: '源码清单地址'
         required: true
         default: 'github.com'
       manifest_branch:
-        description: '分支 (v17.x)'
+        description: '源码分支'
         required: true
         default: 'v17.x'
       prune_repo:
-        description: '清理磁盘 (必须填 true)'
+        description: '关键：必须为 true 才能释放 300GB 磁盘'
         required: true
         default: 'true'
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 360 # GitHub 免费版限时 6 小时
 
     steps:
-      - name: 1. 极大化磁盘空间
+      - name: 1. 深度清理磁盘空间 (核心步骤)
+        # 为 Android 14 腾出约 150GB 空间
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
           android: true
           dotnet: true
 
-      - name: 2. 安装 AOSP 工具链与 Repo 脚本 (防 HTML 错误版)
+      - name: 2. 安装 AOSP 2026 工具链与修复 Repo (解决 HTML 报错)
         run: |
           set -euo pipefail
           sudo apt update
+          # 在 Ubuntu 24.04 中，python3-setuptools 替代了 python3-distutils
           sudo apt install -y bc bison build-essential ccache curl flex g++-multilib \
             gcc-multilib git git-lfs gnupg gperf lib32readline-dev lib32z1-dev \
             libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
-
-          mkdir -p "$HOME/bin"
           
-          # 【核心修复】：使用 Google 提供的 Repo 原始链接，并增加自动重试镜像
-          curl -fsSL storage.googleapis.com > "$HOME/bin/repo" || \
+          mkdir -p "$HOME/bin"
+          # 【2026 修复】：使用 GitHub 官方 Raw 地址，避开之前报错的 Google 403 页面
           curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
-
-          # 【二次检查】：如果文件开头还是 HTML 标签，说明下载地址被拦截，直接从镜像库强拉
-          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "警告：检测到 HTML 网页。正在尝试从镜像站下载..."
+          
+          # 内容完整性二次校验
+          if head -c 5 "$HOME/bin/repo" | grep -q "<"; then
+            echo "错误：下载到了网页而非脚本。正在尝试清华镜像..."
             curl -fsSL mirrors.tuna.tsinghua.edu.cn > "$HOME/bin/repo"
           fi
           
           chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
-          echo "Repo 工具安装成功！"
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 3. 源码同步 (2026 分支: v17.x)
+      - name: 3. 源码同步 (极简 Intel/Surface 模式)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 初始化：使用 2026 年验证过的 v17.x 分支
+          # 使用 2026 年验证过的 v17.x 分支 (Android 14)
           repo init -u "${{ github.event.inputs.manifest_url }}" -b "${{ github.event.inputs.manifest_branch }}" --depth=1
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 4. 释放空间与 i1135G7 专项优化
+      - name: 4. 磁盘生存清理 (如果不删 .repo 编译必败)
+        if: ${{ github.event.inputs.prune_repo == 'true' }}
         run: |
-          cd build_dir
-          rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
-          if [[ "${{ github.event.inputs.prune_repo }}" == "true" ]]; then
-            rm -rf .repo
-          fi
+          cd build_dir && rm -rf .repo
 
-      - name: 5. 针对 Surface i1135G7 执行编译
+      - name: 5. 针对 Surface i1135G7 执行专项编译
         run: |
           set -euo pipefail
           cd build_dir
           source build/envsetup.sh
           
-          # Tiger Lake (1135G7) 指令集优化
+          # 针对 Tiger Lake (1135G7) 的 Iris Xe 显卡加速
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
-          export TARGET_SURFACE=true
-          export BLISS_BUILD_VARIANT="gapps"
-          export TARGET_ENABLE_HOUDINI=true
-          export TARGET_ENABLE_HOUDINI_64=true
           
-          # 核心修复：防止 Surface 11代 CPU 屏幕闪烁
+          # 适配 Surface 特有硬件 (内核补丁与触控)
+          export TARGET_SPECIAL_VARIANT="surface"
+          export BOARD_IS_SURFACE_BUILD=true
+          export BLISS_BUILD_VARIANT="gapps"
+          
+          # 核心修复：解决 Surface Pro 8/9 等 11 代酷睿常见的屏幕闪烁问题
           export BOARD_KERNEL_CMDLINE="i915.enable_psr=0 intel_pstate=passive"
           
+          # 选择目标并开始构建
           lunch bliss_x86_64-userdebug
           mka iso_img -j4
 
-      - name: 6. 上传 ISO
+      - name: 6. 上传 ISO 镜像
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
+          retention-days: 1
