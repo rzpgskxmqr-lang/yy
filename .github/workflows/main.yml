@@ -1,4 +1,5 @@
-# Build BlissOS 17 (Surface i1135G7 Optimized) — safer template
+
+# Build BlissOS 17 (Surface i1135G7 Optimized) — safer template (manifest_branch=bliss-v17.x, houdini_repo empty, prune_repo=false)
 name: Build BlissOS 17 (Surface i1135G7 Optimized)
 
 on:
@@ -87,11 +88,11 @@ jobs:
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
           mkdir -p "$HOME/bin"
-          # 官方 repo 二进制（推荐），若公司网络需替换为内网镜像
           curl -fsSLo "$HOME/bin/repo" https://storage.googleapis.com/git-repo-downloads/repo
           chmod a+x "$HOME/bin/repo"
           export PATH="$HOME/bin:$PATH"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
+
       - name: 2.1 恢复 ccache（可选）
         uses: actions/cache@v4
         with:
@@ -108,9 +109,7 @@ jobs:
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
 
-          # repo init / sync 使用用户提供的 MANIFEST_URL
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
-          # 使用并行下载，--partial 可根据 manifest 支持情况酌情添加以减少下载量
           repo sync -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags
 
           # 剔除非 Intel 代码腾出空间（按需调整）
@@ -123,7 +122,6 @@ jobs:
           set -euo pipefail
           echo "PRUNE_REPO=true，开始删除 build_dir/.repo 以释放磁盘（此操作不可恢复）"
           cd build_dir
-          # 强烈建议在第一次尝试时保留 .repo，确认构建脚本运行正常后再删除以节省空间
           rm -rf .repo || true
 
       - name: 4. 集成 ARM 兼容层 (Houdini)（可选）
