@@ -1,16 +1,26 @@
+
+# Build BlissOS 17 (Surface i1135G7 Final) — safer, corrected version
 name: Build BlissOS 17 (Surface i1135G7 Final)
 
 on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: 'BlissOS Manifest URL'
+        description: 'BlissOS Manifest URL (必须填写完整 URL，例如 https://github.com/YourOrg/manifest.git 或 git@github.com:YourOrg/manifest.git)'
         required: true
-        default: 'github.com'
+        default: ''
+      manifest_branch:
+        description: 'Manifest 分支 (默认: bliss-v17.x)'
+        required: false
+        default: 'bliss-v17.x'
       prune_repo:
-        description: '清理磁盘 (必须填 true)'
-        required: true
-        default: 'true'
+        description: '清理磁盘 (删除 build_dir/.repo)。风险很高，请谨慎，默认 false)'
+        required: false
+        default: 'false'
+      max_jobs:
+        description: '并行编译线程数 (-j)，默认使用 runner CPU 数'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -18,8 +28,37 @@ jobs:
     timeout-minutes: 360
     env:
       MANIFEST_URL: ${{ github.event.inputs.manifest_url }}
+      MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch }}
+      PRUNE_REPO: ${{ github.event.inputs.prune_repo }}
+      MAX_JOBS: ${{ github.event.inputs.max_jobs }}
+      CCACHE_DIR: ${{ runner.temp }}/ccache
 
     steps:
+      - name: Checkout workflow (optional)
+        uses: actions/checkout@v4
+
+      - name: Validate inputs (防止占位符/误填)
+        run: |
+          set -euo pipefail
+          echo "MANIFEST_URL='${MANIFEST_URL}'"
+          if [[ -z "${MANIFEST_URL// }" ]]; then
+            echo "错误：MANIFEST_URL 为空。请在触发时填写完整 manifest URL。"
+            exit 1
+          fi
+          if ! echo "$MANIFEST_URL" | grep -Ei '^https?://|^git@' >/dev/null; then
+            echo "错误：MANIFEST_URL 必须以 https:// 或 git@ 开头。 当前: $MANIFEST_URL"
+            exit 1
+          fi
+          if echo "$MANIFEST_URL" | grep -Ei '^https?://github\.com/?$|^github\.com$|example|OWNER|MANIFEST_REPO' >/dev/null; then
+            echo "错误：MANIFEST_URL 看起来像占位符或不完整地址：$MANIFEST_URL"
+            exit 1
+          fi
+          if [[ "${PRUNE_REPO}" != "true" && "${PRUNE_REPO}" != "false" ]]; then
+            echo "错误：prune_repo 必须为 'true' 或 'false'。 当前: ${PRUNE_REPO}"
+            exit 1
+          fi
+          echo "输入校验通过。PRUNE_REPO='${PRUNE_REPO}'"
+
       - name: 1. 极大化磁盘空间
         uses: jlumbroso/free-disk-space@main
         with:
@@ -27,7 +66,7 @@ jobs:
           android: true
           dotnet: true
 
-      - name: 2. 安装 AOSP 工具链并修复 Repo 二进制 (修复版)
+      - name: 2. 安装 AOSP 工具链并准备 repo 二进制
         run: |
           set -euo pipefail
           sudo apt update
@@ -36,63 +75,99 @@ jobs:
             libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
-
           mkdir -p "$HOME/bin"
-          # 【核心修复】：使用包含完整路径的官方稳定下载源
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
-          
-          # 鲁棒性检查：如果下载的内容仍是 HTML，则尝试 GitHub Raw 镜像
-          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "官方源访问异常，尝试备用镜像..."
-            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
+          # 使用官方 repo 二进制
+          curl -fsSLo "$HOME/bin/repo" https://storage.googleapis.com/git-repo-downloads/repo
+          # 简单验证：若文件小于 100 字节或包含 HTML，则下载失败
+          if [[ ! -s "$HOME/bin/repo" || $(wc -c < "$HOME/bin/repo") -lt 100 ]]; then
+            echo "repo 二进制下载异常（文件太小），请检查网络或替换为内部镜像。"
+            ls -l "$HOME/bin/repo" || true
+            head -n 5 "$HOME/bin/repo" || true
+            exit 1
           fi
-          
           chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
+          export PATH="$HOME/bin:$PATH"
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
+
+      - name: Restore ccache (可选)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-bliss-ccache-${{ env.MANIFEST_BRANCH }}
+          restore-keys: |
+            ${{ runner.os }}-bliss-ccache-
 
       - name: 3. 源码同步 (极简克隆)
         run: |
           set -euo pipefail
+          rm -rf build_dir
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
-          
-          # 初始化与同步，--depth=1 节省磁盘
-          repo init -u "$MANIFEST_URL" -b bliss-v17.x --depth=1
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
+          repo sync -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags
 
-      - name: 4. 清理磁盘空间 (免费版必须执行)
-        run: |
-          cd build_dir
-          # 物理去除非 Intel 平台代码
-          rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
-          if [[ "${{ github.event.inputs.prune_repo }}" == "true" ]]; then
-            echo "正在删除 .repo 目录以确保编译磁盘空间..."
-            rm -rf .repo
-          fi
-
-      - name: 5. 针对 i1135G7 (Tiger Lake) 专项优化编译
+      - name: 4. 清理磁盘空间（可选，危险）
         run: |
           set -euo pipefail
           cd build_dir
-          source build/envsetup.sh
-          
-          # 针对 i1135G7 Iris Xe 显卡优化
+          # 删除非 Intel 平台代码以释放空间
+          rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
+          if [[ "${PRUNE_REPO}" == "true" ]]; then
+            echo "PRUNE_REPO=true - 正在删除 build_dir/.repo 以释放磁盘（不可恢复）"
+            rm -rf .repo || true
+          else
+            echo "PRUNE_REPO=false - 保留 .repo（推荐初次运行保留以便调试）"
+          fi
+
+      - name: 5. (可选) 集成 Houdini - 若需要请改为传入 houdini_repo 输入并实现 clone
+        run: |
+          echo "若需集成 Houdini，请在 workflow.inputs 中添加 houdini_repo 并在此处实现 git clone（此模板默认跳过）"
+
+      - name: 6. 1135G7 (Tiger Lake) 专项编译
+        run: |
+          set -euo pipefail
+          cd build_dir
+          source build/envsetup.sh || { echo "无法找到 build/envsetup.sh"; exit 1; }
+
+          # 启用并配置 ccache
+          export USE_CCACHE=1
+          export CCACHE_DIR="${CCACHE_DIR}"
+          mkdir -p "${CCACHE_DIR}"
+          ccache -M 50G || true
+
+          # 目标优化参数（追加 kernel cmdline）
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           export TARGET_ENABLE_HOUDINI=true
           export TARGET_ENABLE_HOUDINI_64=true
-          # 解决 Surface 11 代 CPU 闪屏问题的关键参数
           export BOARD_KERNEL_CMDLINE="${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive"
-          
-          lunch bliss_x86_64-userdebug
-          mka iso_img -j4
 
-      - name: 6. 上传 ISO
+          # 并行度：优先使用用户指定 MAX_JOBS，否则使用 nproc
+          if [[ -n "${MAX_JOBS// }" ]]; then
+            JOBS="${MAX_JOBS}"
+          else
+            JOBS="$(nproc)"
+          fi
+          echo "使用并行线程: ${JOBS}"
+
+          lunch bliss_x86_64-userdebug
+          mka iso_img -j"${JOBS}"
+
+      - name: Save ccache (可选)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-bliss-ccache-${{ env.MANIFEST_BRANCH }}
+          restore-keys: |
+            ${{ runner.os }}-bliss-ccache-
+
+      - name: 7. 上传 ISO（注意 artifact 大小限制）
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
+          retention-days: 1
