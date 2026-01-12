@@ -1,5 +1,4 @@
 
-
 name: Build BlissOS 17 (Surface i1135G7 2026-Final)
 
 on:
@@ -10,11 +9,11 @@ on:
         required: true
         default: 'github.com'
       manifest_branch:
-        description: '源码分支 (2026 建议使用 universe-x86)'
+        description: '源码分支'
         required: true
         default: 'universe-x86'
       prune_repo:
-        description: '清理 .repo 释放空间 (必须填 true)'
+        description: '清理磁盘释放空间 (必须填 true)'
         required: true
         default: 'true'
 
@@ -42,10 +41,8 @@ jobs:
           tool-cache: true
           android: true
           dotnet: true
-          # 2026年 AOSP 编译需要约 250GB 空间，清理尽可能多的预装软件
-          swap-storage: true 
 
-      - name: 3. 安装工具链与修复 Repo (2026 官方最新版)
+      - name: 3. 安装工具链与修复 Repo (路径修正版)
         run: |
           set -euo pipefail
           sudo apt update
@@ -57,69 +54,65 @@ jobs:
 
           mkdir -p "$HOME/bin"
           
-          # 使用 Google 官方最新 repo 路径
-          curl -fsSL storage.googleapis.com > "$HOME/bin/repo"
+          # 修正 400 错误：使用 Google 官方源下载，并添加容错
+          curl -fsSL storage.googleapis.com > "$HOME/bin/repo" || echo "Google 下载失败"
           
-          # 如果被墙或路径失效，使用 GitHub 镜像路径
-          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "Google 源不可用，切换至 GitHub 官方维护镜像..."
+          # 核心修复：如果 Google 源返回错误码或文件为空，切换到正确的 GitHub Raw 完整路径
+          if [ ! -s "$HOME/bin/repo" ] || grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
+            echo "正在切换至 GitHub 官方维护的 Repo 原始路径..."
             curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
           fi
           
           chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
 
-      - name: 4. 源码同步 (基于已存在的 universe 分支)
+      - name: 4. 源码同步 (2026 分支智能匹配)
         run: |
           set -euo pipefail
-          mkdir build_dir && cd build_dir
+          mkdir -p build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 核心修复：尝试用户输入分支 -> universe-x86 -> master
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 || \
-          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 || \
-          repo init -u "$MANIFEST_URL" -b master --depth=1
+          # 修正初始化逻辑：优先尝试用户输入，若失败则尝试 universe-x86（根据 2026 仓库现状）
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 --no-clone-bundle || \
+          repo init -u "github.com" -b universe-x86 --depth=1 --no-clone-bundle
           
-          # 使用加速参数进行同步
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 5. 针对 i1135G7 瘦身与空间释放
+      - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
         run: |
           set -euo pipefail
           cd build_dir
-          # 物理去除非 Intel 平台代码腾出空间 (2026 AOSP 源码极大)
+          # 物理去除非 Intel 平台代码腾出空间
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
           
           if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "正在删除 .repo 缓存以确保有足够空间输出 ISO..."
-            # 注意：删除 .repo 后无法再增量编译，但对 Actions 来说是必须的
+            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
             rm -rf .repo
           fi
 
-      - name: 6. 执行 Surface i1135G7 专项优化编译
+      - name: 6. 针对 Surface i1135G7 执行专项优化编译
         run: |
           set -euo pipefail
           cd build_dir
           source build/envsetup.sh
           
-          # 针对 Tiger Lake (1135G7) 及 Iris Xe 显卡的 2026 优化参数
+          # 针对 Tiger Lake (1135G7) 的 Iris Xe 显卡加速
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           
-          # 修正：Surface Pro 8/9 的 11 代酷睿必须禁用 PSR 以防闪屏
+          # 核心修正：解决 Surface Pro 8/9/Laptop 4 等 11 代酷睿屏幕闪烁的关键参数
           export BOARD_KERNEL_CMDLINE="${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive"
           
-          # 2026 年 Bliss 默认编译目标
           lunch bliss_x86_64-userdebug
           mka iso_img -j$(nproc)
 
-      - name: 7. 上传结果 (Artifacts)
+      - name: 7. 上传结果
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: BlissOS-17-Surface-i1135G7-Build
+          name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
-          retention-days: 7
+          retention-days: 1
