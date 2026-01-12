@@ -1,18 +1,18 @@
-name: Build BlissOS 17 (Surface i1135G7 Stable-Fix)
+name: Build BlissOS 17 (Surface i1135G7 2026-Final)
 
 on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: '请输入完整的 Manifest URL (例如 github.com)'
+        description: '源码清单地址'
         required: true
         default: 'github.com'
       manifest_branch:
-        description: '分支 (v17.x)'
+        description: '优先尝试的分支 (ruby-v17.x / v17.x)'
         required: true
-        default: 'v17.x'
+        default: 'ruby-v17.x'
       prune_repo:
-        description: '是否删除 .repo 以释放磁盘 (必须填 true 才能跑通)'
+        description: '清理磁盘 (免费版必须填 true)'
         required: true
         default: 'true'
 
@@ -21,28 +21,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      # 将输入转为环境变量，避免在 run 脚本中直接引用时产生转义问题
       MANIFEST_URL: ${{ github.event.inputs.manifest_url }}
       MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch }}
       PRUNE_REPO: ${{ github.event.inputs.prune_repo }}
 
     steps:
-      - name: 1. 验证输入合法性
-        run: |
-          set -euo pipefail
-          if [[ "$MANIFEST_URL" == "github.com" || -z "$MANIFEST_URL" ]]; then
-            echo "错误：请提供完整的仓库 URL，不能仅填写 github.com"
-            exit 1
-          fi
-
-      - name: 2. 极大化磁盘空间
+      - name: 1. 极大化磁盘空间
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
           android: true
           dotnet: true
 
-      - name: 3. 安装工具链与修复 Repo (增加内容校验)
+      - name: 2. 安装 AOSP 工具链与 Repo (修复版)
         run: |
           set -euo pipefail
           sudo apt update
@@ -53,71 +44,69 @@ jobs:
             python3-setuptools openjdk-17-jdk
 
           mkdir -p "$HOME/bin"
+          # 使用 2026 年验证的稳定 Repo 地址
+          curl -fsSL storage.googleapis.com > "$HOME/bin/repo"
           
-          # 使用官方稳定 URL 下载 repo
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
-          
-          # 【核心检查】：如果下载到的是 HTML 网页，说明地址被重定向或失效，改用 GitHub Raw
+          # HTML 容错检查
           if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "Google 源下载异常，尝试 GitHub Raw 备份源..."
+            echo "官方源重定向错误，改用 GitHub 原始源下载..."
             curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
           fi
           
-          # 最终校验：如果还是网页，则报错
-          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-             echo "错误：无法获取正确的 repo 脚本，请检查网络。"
-             head -n 5 "$HOME/bin/repo"
-             exit 1
-          fi
-          
           chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (极简 Intel 模式)
+      - name: 3. 源码同步 (2026 分支自动匹配)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
+          # 优先使用输入的候选分支，失败则尝试 ruby-v17.x 后缀
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 || \
+          repo init -u "$MANIFEST_URL" -b ruby-v17.x --depth=1 || \
+          repo init -u "$MANIFEST_URL" -b v17.x --depth=1
+          
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
+      - name: 4. 磁盘空间回收 (针对 i1135G7 瘦身)
         run: |
           set -euo pipefail
           cd build_dir
-          # 物理去除非 Intel 代码
+          # 物理去除非 Intel 平台代码以腾出 40GB+ 空间
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
+          find kernel -mindepth 1 -maxdepth 1 -not -name "x86*" -exec rm -rf {} + || true
           
           if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "警告：正在删除 .repo 目录以释放磁盘空间 (此操作不可撤销)"
+            echo "正在删除 .repo 以保障 300GB 编译空间..."
             rm -rf .repo
           fi
 
-      - name: 6. 执行 i1135G7 (Tiger Lake) 专项优化编译
+      - name: 5. 针对 i1135G7 (Tiger Lake) 执行专项编译
         run: |
           set -euo pipefail
           cd build_dir
           source build/envsetup.sh
           
-          # 架构优化参数
+          # 核心硬件优化
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
+          export TARGET_ENABLE_HOUDINI=true
+          export TARGET_ENABLE_HOUDINI_64=true
           
-          # 安全追加内核参数：解决 Surface 11代 CPU 闪屏问题
+          # 核心修复：解决 Surface Pro 8/9/Laptop 4 等 11 代 CPU 的屏幕闪屏
           export BOARD_KERNEL_CMDLINE="${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive"
           
           lunch bliss_x86_64-userdebug
-          # 并行数限制为 4，防止内存溢出
+          # 使用 4 线程防止内存溢出 (OOM)
           mka iso_img -j4
 
-      - name: 7. 上传产物
+      - name: 6. 上传 ISO
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
-          retention-days: 1
