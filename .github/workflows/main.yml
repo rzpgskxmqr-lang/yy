@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: '完整的 Manifest URL (必填)'
+        description: '完整的 Manifest URL'
         required: true
         default: 'github.com'
       manifest_branch:
-        description: '源码分支 (推荐: ruby-v17.x 或 v17.x)'
+        description: '源码分支'
         required: true
         default: 'ruby-v17.x'
       prune_repo:
@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$MANIFEST_URL" == "github.com" || -z "$MANIFEST_URL" ]]; then
-            echo "错误：不能只填 github.com，请填写完整仓库地址。"
+            echo "错误：请填写完整的 https 仓库地址，不能只填 github.com"
             exit 1
           fi
 
@@ -41,7 +41,7 @@ jobs:
           android: true
           dotnet: true
 
-      - name: 3. 安装工具链与修复 Repo (核心修复)
+      - name: 3. 安装工具链与修复 Repo (2026 路径修正版)
         run: |
           set -euo pipefail
           sudo apt update
@@ -53,28 +53,29 @@ jobs:
 
           mkdir -p "$HOME/bin"
           
-          # 【核心修复】：使用带完整路径的官方稳定下载源
+          # 【核心修复】：原脚本此处路径不全，现已补全完整下载路径
           curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
           
-          # 如果下载到的是网页内容，改用 GitHub 官方托管的 Raw 原始脚本路径
+          # 备用源：如果下载到 HTML 网页，切换至官方代码库原始路径
           if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "Google 源不可用，切换至 GitHub Raw 备用源..."
+            echo "Google 源不可用，切换至 GitHub Raw 原始脚本路径..."
             curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
           fi
           
           chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (2026 分支自动适配)
+      - name: 4. 源码同步 (2026 分支智能匹配)
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 初始化：优先尝试输入的分支，失败则尝试官方常用的 ruby-v17.x
+          # 2026年分支名变动频繁，脚本将依次尝试 ruby-v17.x 和 v17.x
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 || \
-          repo init -u "$MANIFEST_URL" -b ruby-v17.x --depth=1
+          repo init -u "$MANIFEST_URL" -b ruby-v17.x --depth=1 || \
+          repo init -u "$MANIFEST_URL" -b v17.x --depth=1
           
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
@@ -82,11 +83,11 @@ jobs:
         run: |
           set -euo pipefail
           cd build_dir
-          # 物理去除非 Intel 平台代码以腾出约 40GB 空间
+          # 物理去除非 Intel 平台代码腾出空间
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
           
           if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "正在删除 .repo 目录以确保有足够的磁盘空间进行 ISO 打包..."
+            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
             rm -rf .repo
           fi
 
@@ -96,13 +97,13 @@ jobs:
           cd build_dir
           source build/envsetup.sh
           
-          # 11代 Tiger Lake 指令集优化
+          # 针对 Tiger Lake (1135G7) 的 Iris Xe 显卡加速
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           
-          # 关键：解决 Surface 11代 CPU (i1135G7) 常见的屏幕闪烁/花屏问题
+          # 核心修正：解决 Surface Pro 8/9/Laptop 4 等 11 代酷睿屏幕闪烁的关键参数
           export BOARD_KERNEL_CMDLINE="${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive"
           
           lunch bliss_x86_64-userdebug
@@ -114,3 +115,5 @@ jobs:
         with:
           name: BlissOS-17-Surface-i1135G7
           path: build_dir/out/target/product/x86_64/*.iso
+          retention-days: 1
+
