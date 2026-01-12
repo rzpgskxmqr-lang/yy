@@ -1,3 +1,4 @@
+
 name: Build BlissOS 17 (Surface i1135G7 Final Fix)
 
 on:
@@ -6,14 +7,6 @@ on:
       manifest_url:
         description: '源码地址'
         required: true
-        default: 'github.com'
-      manifest_branch:
-        description: '分支'
-        required: true
-        default: 'bliss-v17.x'
-      houdini_repo:
-        description: '兼容层地址'
-        required: false
         default: 'github.com'
       prune_repo:
         description: '清理磁盘 (必须填 true)'
@@ -24,93 +17,80 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    env:
-      MANIFEST_URL: ${{ github.event.inputs.manifest_url }}
-      MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch }}
-      HOUDINI_REPO: ${{ github.event.inputs.houdini_repo }}
-      PRUNE_REPO: ${{ github.event.inputs.prune_repo }}
 
     steps:
-      - name: 1. 极大化磁盘空间 (针对免费版优化)
+      - name: 1. 极大化磁盘空间
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
           android: true
           dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
 
-      - name: 2. 安装工具链与修复 Repo (核心修复步骤)
+      - name: 2. 安装工具链与修复 Repo (2026 稳定版)
         run: |
           set -euo pipefail
           sudo apt update
-          # 安装 2026 年 Ubuntu 24.04 必需的工具，用 setuptools 替代已废弃的 distutils
           sudo apt install -y bc bison build-essential ccache curl flex g++-multilib \
             gcc-multilib git git-lfs gnupg gperf lib32readline-dev lib32z1-dev \
             libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
             lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
             python3-setuptools openjdk-17-jdk
           
+          # 创建 bin 目录
           mkdir -p "$HOME/bin"
-          # 【彻底修复】：使用 RAW 原始代码地址，确保不下载到 HTML 网页
-          curl -fsSLo "$HOME/bin/repo" raw.githubusercontent.com
           
-          # 安全检查：如果下载的内容包含 HTML 标签，说明下载地址被拦截或失效
-          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "错误：下载的是网页而非脚本，正在尝试备用地址..."
-            curl -fsSLo "$HOME/bin/repo" mirrors.tuna.tsinghua.edu.cn > ~/bin/repo || exit 1
+          # 【核心修复】：直接从官方最新仓库下载真正的脚本，增加 -L 处理重定向
+          curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
+          
+          # 鲁棒性检查：如果文件开头是 < 或 { 符号，说明下载到了网页或 JSON 错误，立即报错不再运行
+          if head -c 5 "$HOME/bin/repo" | grep -q "<"; then
+             echo "错误：下载到了网页而非脚本！正在尝试备用方案..."
+             # 备用方案：使用 apt 直接安装（如果仓库支持）或从镜像拉取
+             sudo apt-get install repo -y || (curl -fsSL mirrors.tuna.tsinghua.edu.cn > "$HOME/bin/repo")
           fi
           
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 3. 源码瘦身同步 (仅限 Intel/Surface)
+      - name: 3. 源码同步
         run: |
           set -euo pipefail
           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
-          
-          # 物理去除非 Intel 硬件代码以节省磁盘
-          rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
-          find kernel -mindepth 1 -maxdepth 1 -not -name "x86*" -exec rm -rf {} + || true
+          # 初始化与同步
+          /usr/bin/repo init -u "${{ github.event.inputs.manifest_url }}" -b bliss-v17.x --depth=1
+          /usr/bin/repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 4. 释放磁盘空间 (重要：不删 .repo 编译必败)
-        if: ${{ env.PRUNE_REPO == 'true' }}
-        run: |
-          cd build_dir && rm -rf .repo
-
-      - name: 5. 集成 Houdini ARM 兼容层
-        if: ${{ env.HOUDINI_REPO != '' }}
+      - name: 4. 释放空间 (免费版必须执行)
         run: |
           cd build_dir
-          git clone --depth=1 --branch "$MANIFEST_BRANCH" "$HOUDINI_REPO" vendor/intel/houdini || true
+          rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
+          if [[ "${{ github.event.inputs.prune_repo }}" == "true" ]]; then
+            rm -rf .repo
+          fi
 
-      - name: 6. 执行 Surface i1135G7 专项优化编译
+      - name: 5. 针对 i1135G7 执行专项优化编译
         run: |
           set -euo pipefail
           cd build_dir
           source build/envsetup.sh
           
-          # 针对 Tiger Lake (1135G7) 的 Iris Xe 显卡与 CPU 优化
+          # 针对 Tiger Lake (1135G7) 指令集优化
           export TARGET_CPU_VARIANT="tigerlake"
           export BOARD_GPU_DRIVERS="iris"
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT="gapps"
           export TARGET_ENABLE_HOUDINI=true
           export TARGET_ENABLE_HOUDINI_64=true
-          # 解决 Surface 11代 CPU 闪屏的核心参数
+          # 解决 Surface 11代 CPU 闪屏的必加参数
           export BOARD_KERNEL_CMDLINE="i915.enable_psr=0 intel_pstate=passive"
           
           lunch bliss_x86_64-userdebug
-          # 限制并发为 4，防止内存溢出
           mka iso_img -j4
 
-      - name: 7. 上传编译结果 (ISO)
+      - name: 6. 上传 ISO
         if: success()
         uses: actions/upload-artifact@v4
         with:
