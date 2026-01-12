@@ -34,7 +34,7 @@ jobs:
             exit 1
           fi
 
-      - name: 2. 极大化磁盘空间 (2026 核心步骤)
+      - name: 2. 极大化磁盘空间并强制开启 Swap
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
@@ -42,6 +42,8 @@ jobs:
           dotnet: true
           docker-images: true
           large-packages: true
+          # 【2026 防崩溃修正】：开启 Swap 虚拟内存，防止内存溢出导致 Runner 失联
+          swap-storage: true
 
       - name: 3. 安装工具链与修复 Repo
         run: |
@@ -54,37 +56,39 @@ jobs:
             python3-setuptools openjdk-17-jdk
 
           mkdir -p "$HOME/bin"
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
+          curl -fsSL storage.googleapis.com > "$HOME/bin/repo"
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo
 
-      - name: 4. 源码同步与即时深度瘦身 (边同步边瘦身版)
+      - name: 4. 源码同步 (防卡死与低并发稳定版)
         run: |
           set -euo pipefail
           mkdir -p build_dir && cd build_dir
           
-          # Git 极致空间优化配置
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           git config --global http.postBuffer 524288000
-          
-          # 初始化 - 使用 blob:none 过滤所有历史记录，仅拉取当前代码
+          # 【防挂起修正】：设置极低速度阈值，超时自动重连
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 60
+
           echo "Starting Repo Init (Extreme Sparse Mode)..."
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 --partial-clone --clone-filter=blob:none || \
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 --partial-clone --clone-filter=blob:none
           
-          # 同步 - 限制并发防止峰值流量导致的临时文件堆积
-          echo "Starting Repo Sync (This may take a while)..."
-          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --fail-fast
+          # 【核心修正】：限制并发为 j4 降低内存和 IO 压力，防止 Runner 崩溃
+          echo "Starting Repo Sync (Quiet mode to save buffer)..."
+          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --fail-fast --retry-fetches=5 -g default,-arm,-mips,-darwin,-tests -q
+
+      - name: 5. 深度释放磁盘空间 (精简组件，保留中英文字体)
+        run: |
+          set -euo pipefail
+          cd build_dir
           
-          echo "=== 同步完成，立即开始深度瘦身以腾出编译空间 ==="
-          
-          # 1. 移除巨型非核心组件 (如 WebView 约 5GB+)
+          echo "=== 正在执行深度清理以确保 Runner 通讯不中断 ==="
           rm -rf external/chromium-webview 2>/dev/null || true
           
-          # 2. 精简字体库：仅保留中文 (CJK) 和 英文 (Roboto)
           if [ -d "external/noto-fonts" ]; then
-            echo "正在保留中英文字体..."
             mkdir -p ../temp_fonts
             mv external/noto-fonts/cjk ../temp_fonts/ 2>/dev/null || true
             mv external/roboto-fonts ../temp_fonts/ 2>/dev/null || true
@@ -94,37 +98,35 @@ jobs:
             rm -rf ../temp_fonts
           fi
           
-          # 3. 删除不相关的驱动 (AMD/Linaro)
           rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
-          rm -rf device/linaro 2>/dev/null || true
+          rm -rf device/hisilicon vendor/hisi 2>/dev/null || true
           
-          # 4. 【救命步】删除 .repo 缓存 (释放约 150GB 空间)
           if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "紧急释放磁盘空间：正在彻底删除 .repo 目录..."
+            echo "彻底删除 .repo 文件夹..."
             rm -rf .repo
           fi
 
-          # 5. 清理 Git 历史冗余 (额外释放 10GB+ 空间)
-          echo "正在清理子仓库 Git 冗余..."
+          # 清理 Git 冗余以获得最后 10GB 缓冲
           find . -name ".git" -type d -exec rm -rf {} + || true
-          
-          echo "=== 空间准备就绪 ==="
           df -h .
 
-      - name: 5. 针对 Surface i1135G7 执行专项优化编译
+      - name: 6. 执行专项优化编译 (防溢出并发限制)
         run: |
           set -euo pipefail
           cd build_dir
-          # 使用 Tigerlake (i1135G7) 架构优化参数
+          
+          # 【2026 防失联关键】：
+          # 不要使用 -j$(nproc)，在标准虚拟机上这会因内存耗尽而杀掉进程。
+          # 限制为 -j4 或 -j8 可以让编译更稳健。
           /bin/bash -c "source build/envsetup.sh && \
           export TARGET_CPU_VARIANT='tigerlake' && \
           export BOARD_GPU_DRIVERS='iris' && \
           export TARGET_SURFACE=true && \
           export BLISS_BUILD_VARIANT='gapps' && \
           lunch bliss_x86_64-userdebug && \
-          mka iso_img -j$(nproc)"
+          mka iso_img -j4"
 
-      - name: 6. 上传结果
+      - name: 7. 上传结果
         if: success()
         uses: actions/upload-artifact@v4
         with:
