@@ -1,10 +1,11 @@
+
 name: Build BlissOS 17 (Surface i1135G7 2026-Final)
 
 on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: '完整的 Manifest URL'
+        description: '完整的 Manifest URL (例如 github.com)'
         required: true
         default: 'github.com'
       manifest_branch:
@@ -57,10 +58,10 @@ jobs:
           chmod a+x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
-      - name: 4. 源码同步 (源头精简拦截版)
+      - name: 4. 源码同步 (修正参数兼容版)
         run: |
           set -euo pipefail
-          mkdir build_dir && cd build_dir
+          mkdir -p build_dir && cd build_dir
           
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
@@ -68,21 +69,25 @@ jobs:
           git config --global http.lowSpeedLimit 1000
           git config --global http.lowSpeedTime 60
 
-          # 初始化 - 使用 partial-clone 和 blob:none 极大减小元数据
-          echo "正在初始化清单..."
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 --partial-clone --clone-filter=blob:none || \
-          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 --partial-clone --clone-filter=blob:none
+          # 【修正点】：将 -g 移入 init 阶段。这是 2026 年处理 Groups 的标准做法
+          # 这样可以避免 repo sync 不识别 -g 的报错
+          echo "正在初始化清单并配置精简组..."
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" \
+            --depth=1 \
+            --partial-clone \
+            --clone-filter=blob:none \
+            -g "default,-arm,-mips,-darwin,-tests" || \
+          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 -g "default,-arm,-mips,-darwin,-tests"
 
-          # 【核心拦截】：在同步开始前，直接从清单中删掉无关厂商，彻底防止下载
+          # 【核心拦截】：在同步开始前，直接从清单中删掉无关厂商
           echo "执行源头拦截：剔除麒麟、高通、联发科、英伟达、晶晨等无关项目..."
           cd .repo/manifests
-          # 物理删除清单中包含这些厂商关键字的行
           sed -i '/hisi/d; /hisilicon/d; /qcom/d; /mediatek/d; /mtk/d; /nvidia/d; /amlogic/d; /exynos/d; /broadcom/d' default.xml
           cd ../..
 
-          # 同步 - 加入组过滤进一步精简，限制并发防止 IO 爆表
+          # 【修正点】：sync 阶段不再重复使用 -g，已由 init 阶段锁定配置
           echo "开始同步 (极致精简模式)..."
-          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --fail-fast --retry-fetches=5 -g default,-arm,-mips,-darwin,-tests
+          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --fail-fast --retry-fetches=5
 
       - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
         run: |
