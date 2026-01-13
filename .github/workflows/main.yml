@@ -80,7 +80,6 @@ jobs:
             -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
           repo init -u "$MANIFEST_URL" -b master --depth=1 \
             -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm
-           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 --clone-bundle --no-tags
           # 2. 【强硬抹除策略】：直接从本地清单物理删除故障仓库定义
           # 2026 年 Repo 只要在清单里看到 vendor/prebuilts 就会去强制 fetch 那个不存在的 universe 分支
           # 我们直接用 sed 把这个项目从本地所有 XML 清单中“物理蒸发”，让 Repo 彻底无视它
