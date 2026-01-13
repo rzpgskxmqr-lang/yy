@@ -110,9 +110,9 @@ jobs:
             mkdir -p prebuilts/go
             git clone --depth=1 https://android.googlesource.com/platform/prebuilts/go/linux-x86 prebuilts/go/linux-x86 || true
             fi
-             if [ ! -d "prebuilts/go/linux-x86" ]; then
-            echo "正在补全 Go 编译器环境..."
-            mkdir -p prebuilts/go
+            if [ ! -d "prebuilts/bazel/common" ]; then
+            echo "正在补全 Bazel 核心组件..."
+            mkdir -p prebuilts/bazel
             git clone --depth=1 https://android.googlesource.com/platform/prebuilts/bazel/common prebuilts/bazel/common || true
             fi
           # 6. 最后确认清理
