@@ -135,42 +135,36 @@ jobs:
 
       - name: 6. 针对 Surface i1135G7 执行专项优化编译
         run: | 
-           # 移除 -u，因为 AOSP 官方脚本不兼容“未绑定变量”检查
-          set -eo pipefail
+          # 1. 禁用 -u 以兼容 AOSP 脚本，仅保留 -e (出错即停)
+          set -e
           cd build_dir
           
-          # 1. 初始化环境 (必须先 source)
-          # 暂时关闭 set -u 兼容 AOSP 内部脚本
-          set +u 2>/dev/null || true
+          # 2. 初始化环境
           source build/envsetup.sh
-          set -u 2>/dev/null || true
           
-          # 2. 设置 Surface i1135G7 专项优化环境变量
+          # 3. 注入 Surface i1135G7 专项优化参数
           export TARGET_CPU_VARIANT='tigerlake'
           export BOARD_GPU_DRIVERS='iris'
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT='gapps'
           
-          # 3. 动态探测并执行 Lunch
-          echo "正在探测可用产品组合..."
-          # 注意：2026年某些版本 lunch 命令输出在 stderr，需重定向
-          LUNCH_TARGET=$(lunch 2>&1 | grep -i "bliss_x86_64" | head -n 1 | awk '{print $1}' | sed 's/\[//g;s/\]//g')
-          
-          LUNCH_FINAL=${LUNCH_TARGET:-bliss_x86_64-trunk_staging-userdebug}
-          echo "选择编译目标: $LUNCH_FINAL"
-          
-          # 执行 lunch 时关闭 -u 防止环境内部冲突
-          set +u
-          lunch "$LUNCH_FINAL" || lunch bliss_x86_64-userdebug
-          set -u
+          # 4. 稳健的 Lunch 逻辑 (针对 2026 Bliss OS 优化)
+          echo "正在选择编译目标..."
+          # 直接尝试标准组合，如果失败则尝试带 trunk 的新组合
+          # 这样写避开了 awk/sed 过滤不净导致的语法错误
+          lunch bliss_x86_64-userdebug || lunch bliss_x86_64-trunk_staging-userdebug || {
+              echo "手动探测可用组合..."
+              # 如果硬编码失败，尝试从环境列表中提取第一个匹配项
+              LUNCH_TARGET=$(lunch 2>&1 | grep -oE "bliss_x86_64-[a-z_0-9\-]+" | head -n 1)
+              lunch "$LUNCH_TARGET"
+          }
 
-          # 4. 执行编译
+          # 5. 执行编译
+          # 2026 AOSP 规范建议直接使用 m 命令
           echo "开始执行编译..."
-          # 使用 m 代替大写的 M，-j4 防止 GitHub Runner 内存溢出
           m installclean
           m iso_img -j4
-         
-          kill $MONITOR_PID || true
+
           
       - name: 7. 上传结果
         if: success()
