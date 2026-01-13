@@ -102,7 +102,8 @@ jobs:
            
           if [ ! -f "build/blueprint/microfactory/microfactory.bash" ]; then
             echo "检测到核心脚本缺失，正在物理补全..."
-            git clone --depth=1 android.googlesource.com build/blueprint || true
+           git clone --depth=1 https://android.googlesource.com/platform/build/blueprint build/blueprint || true
+
           fi
             
           # 6. 最后确认清理
