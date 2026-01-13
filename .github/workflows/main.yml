@@ -100,6 +100,11 @@ jobs:
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
 
+           if [ ! -f "build/blueprint/microfactory/microfactory.bash" ]; then
+            echo "检测到核心脚本缺失，正在物理补全..."
+            git clone --depth=1 android.googlesource.com build/blueprint || true
+          fi
+
           # 6. 最后确认清理
           rm -rf vendor/prebuilts
 
@@ -120,20 +125,27 @@ jobs:
 
       - name: 6. 针对 Surface i1135G7 执行专项优化编译
         run: | 
+          
           set -euo pipefail
           cd build_dir
-          # 显式使用 bash 执行 source 以确保环境加载正确
+          
+          # 启动后台监控清理
+          (while true; do sleep 180; find out/target/product/x86_64/obj -name "*.o" -mmin +10 -delete 2>/dev/null || true; done) &
+          MONITOR_PID=$!
+
           /bin/bash -c "source build/envsetup.sh && \
           export TARGET_CPU_VARIANT='tigerlake' && \
           export BOARD_GPU_DRIVERS='iris' && \
           export TARGET_SURFACE=true && \
           export BLISS_BUILD_VARIANT='gapps' && \
-          export BOARD_KERNEL_CMDLINE='${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive' && \
-          # 【核心修复】：2026规范要求格式为 <product>-<release>-<variant>
-          # 我们尝试 trunk_staging 这个标准发布标签，如果失败则回退到旧格式
-          (lunch bliss_x86_64-trunk_staging-userdebug || lunch bliss_x86_64-userdebug) && \
-          mka iso_img -j$(nproc)"
+          export NINJA_MAX_COMPILE_JOBS=2 && \
+          # 【核心修复】：2026 Trunk Stable 规范尝试
+          # 如果直接 lunch 失败，脚本会尝试加载所有产品定义
+          { lunch bliss_x86_64-trunk_staging-userdebug || lunch bliss_x86_64-userdebug || { echo '尝试从本地搜索产品定义...'; mka bliss_x86_64-userdebug; }; } && \
+          mka installclean && \
+          mka iso_img -j$(nproc)" || { kill $MONITOR_PID; exit 1; }
 
+          kill $MONITOR_PID || true
           
       - name: 7. 上传结果
         if: success()
