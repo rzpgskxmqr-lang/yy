@@ -134,27 +134,41 @@ jobs:
 
       - name: 6. 针对 Surface i1135G7 执行专项优化编译
         run: | 
-          
           set -euo pipefail
           cd build_dir
           
-          # 启动后台监控清理
-          (while true; do sleep 180; find out/target/product/x86_64/obj -name "*.o" -mmin +10 -delete 2>/dev/null || true; done) &
-          MONITOR_PID=$!
+          # 1. 初始化环境
+          source build/envsetup.sh
+          
+          # 2. 设置 Surface i1135G7 (Tiger Lake) 专项优化环境变量
+          # 这些变量将引导编译系统针对 Iris Xe 显卡和 Tiger Lake 指令集进行优化
+          export TARGET_CPU_VARIANT='tigerlake'
+          export BOARD_GPU_DRIVERS='iris'
+          export TARGET_SURFACE=true
+          export BLISS_BUILD_VARIANT='gapps'
+          
+          # 3. 动态探测并执行 Lunch (兼容 2026 Trunk Stable 格式)
+          echo "正在探测可用产品组合..."
+          # 获取包含 bliss_x86_64 的第一个有效组合名
+          LUNCH_TARGET=$(lunch | grep -i "bliss_x86_64" | head -n 1 | awk '{print $1}')
+          
+          # 如果探测失败，则使用 2026 标准格式：<产品>-<释放版>-<变体>
+          LUNCH_FINAL=${LUNCH_TARGET:-bliss_x86_64-trunk_staging-userdebug}
+          echo "选择编译目标: $LUNCH_FINAL"
+          
+          lunch "$LUNCH_FINAL" || {
+              echo "警告：Trunk 格式失败，尝试旧版格式..."
+              lunch bliss_x86_64-userdebug
+          }
 
-          /bin/bash -c "source build/envsetup.sh && \
-          export TARGET_CPU_VARIANT='tigerlake' && \
-          export BOARD_GPU_DRIVERS='iris' && \
-          export TARGET_SURFACE=true && \
-          export BLISS_BUILD_VARIANT='gapps' && \
-          export NINJA_MAX_COMPILE_JOBS=2 && \
-          # 【核心修复】：2026 Trunk Stable 规范尝试
-          # 如果直接 lunch 失败，脚本会尝试加载所有产品定义
-          { lunch bliss_x86_64-trunk_staging-userdebug || lunch bliss_x86_64-userdebug || { echo '尝试从本地搜索产品定义...'; mka bliss_x86_64-userdebug; }; } && \
-          mka installclean && \
-          mka iso_img -j$(nproc)" || { kill $MONITOR_PID; exit 1; }
+          # 4. 执行编译
+          # 移除了会导致崩溃的后台删除监控
+          # -j4 适配 GitHub Runner 内存限制，防止 OOM (内存溢出)
+          echo "开始执行编译..."
+          m installclean
+          m iso_img -j4
 
-          kill $MONITOR_PID || true
+          
           
       - name: 7. 上传结果
         if: success()
