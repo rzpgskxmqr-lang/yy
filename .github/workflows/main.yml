@@ -99,12 +99,12 @@ jobs:
           echo "开始执行减负同步..."
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
-
-           if [ ! -f "build/blueprint/microfactory/microfactory.bash" ]; then
+           
+          if [ ! -f "build/blueprint/microfactory/microfactory.bash" ]; then
             echo "检测到核心脚本缺失，正在物理补全..."
             git clone --depth=1 android.googlesource.com build/blueprint || true
           fi
-
+            
           # 6. 最后确认清理
           rm -rf vendor/prebuilts
 
