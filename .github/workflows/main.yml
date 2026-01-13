@@ -134,37 +134,38 @@ jobs:
 
       - name: 6. 针对 Surface i1135G7 执行专项优化编译
         run: | 
-          set -euo pipefail
+           # 移除 -u，因为 AOSP 官方脚本不兼容“未绑定变量”检查
+          set -eo pipefail
           cd build_dir
           
-          # 1. 初始化环境
+          # 1. 初始化环境 (必须先 source)
+          # 暂时关闭 set -u 兼容 AOSP 内部脚本
+          set +u 2>/dev/null || true
           source build/envsetup.sh
+          set -u 2>/dev/null || true
           
-          # 2. 设置 Surface i1135G7 (Tiger Lake) 专项优化环境变量
-          # 这些变量将引导编译系统针对 Iris Xe 显卡和 Tiger Lake 指令集进行优化
+          # 2. 设置 Surface i1135G7 专项优化环境变量
           export TARGET_CPU_VARIANT='tigerlake'
           export BOARD_GPU_DRIVERS='iris'
           export TARGET_SURFACE=true
           export BLISS_BUILD_VARIANT='gapps'
           
-          # 3. 动态探测并执行 Lunch (兼容 2026 Trunk Stable 格式)
+          # 3. 动态探测并执行 Lunch
           echo "正在探测可用产品组合..."
-          # 获取包含 bliss_x86_64 的第一个有效组合名
-          LUNCH_TARGET=$(lunch | grep -i "bliss_x86_64" | head -n 1 | awk '{print $1}')
+          # 注意：2026年某些版本 lunch 命令输出在 stderr，需重定向
+          LUNCH_TARGET=$(lunch 2>&1 | grep -i "bliss_x86_64" | head -n 1 | awk '{print $1}' | sed 's/\[//g;s/\]//g')
           
-          # 如果探测失败，则使用 2026 标准格式：<产品>-<释放版>-<变体>
           LUNCH_FINAL=${LUNCH_TARGET:-bliss_x86_64-trunk_staging-userdebug}
           echo "选择编译目标: $LUNCH_FINAL"
           
-          lunch "$LUNCH_FINAL" || {
-              echo "警告：Trunk 格式失败，尝试旧版格式..."
-              lunch bliss_x86_64-userdebug
-          }
+          # 执行 lunch 时关闭 -u 防止环境内部冲突
+          set +u
+          lunch "$LUNCH_FINAL" || lunch bliss_x86_64-userdebug
+          set -u
 
           # 4. 执行编译
-          # 移除了会导致崩溃的后台删除监控
-          # -j4 适配 GitHub Runner 内存限制，防止 OOM (内存溢出)
           echo "开始执行编译..."
+          # 使用 m 代替大写的 M，-j4 防止 GitHub Runner 内存溢出
           m installclean
           m iso_img -j4
 
