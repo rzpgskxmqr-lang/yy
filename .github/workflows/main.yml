@@ -66,100 +66,58 @@ jobs:
 
       - name: 4. 源码同步 (2026 自动识别排除修复版)
         run: |
-          
+              - name: 4. 源码同步 (2026 自动识别排除修复版 + Python 兼容补丁)
+        run: |
           set -euo pipefail
           mkdir -p build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          echo "正在初始化并放宽同步限制以补全 Go/Protobuf 依赖..."
-          # 2026 修正：确保 tools,soong 分组被包含，否则无法执行 lunch
+          # 1. 【初始化减负】
+          echo "正在初始化并执行初步减负..."
+          # 这里先执行 init 即使报错也不退出（因为我们要先拿到脚本文件才能修复）
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 \
-            -g default,art,x86,intel,tools,soong \
-            -vts,-arm,-amd,-nvidia,-qualcomm || \
+            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 \
-            -g default,art,x86,intel,tools,soong \
-            -vts,-arm,-amd,-nvidia,-qualcomm
+            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
+          repo init -u "$MANIFEST_URL" -b master --depth=1 \
+            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || true
 
-          # 物理抹除故障项目（保持你的有效逻辑）
-          echo "执行物理级清单阉割..."
+          # 2. 【核心修复】：物理抹除导致 Python 3.12 崩溃的 Logger 参数
+          # 解决：TypeError: Logger._log() got an unexpected keyword argument 'file'
+          echo "正在对 Repo 内部脚本进行 Python 3.12 兼容性热补丁..."
+          if [ -d ".repo/repo" ]; then
+            find .repo/repo -name "*.py" -exec sed -i 's/, file=sys.stderr//g' {} +
+            echo "补丁应用成功。"
+          fi
+
+          # 3. 【强硬抹除策略】：物理删除故障仓库定义
+          echo "执行物理级清单阉割，强制抹除故障项目..."
           find .repo/manifests -name "*.xml" -exec sed -i '/vendor\/prebuilts/d' {} +
           find .repo/manifest.xml -exec sed -i '/vendor\/prebuilts/d' {} + || true
 
-          # 执行同步 (增加 --force-sync 确保路径修复)
-          echo "开始执行同步..."
-          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --detach
+          # 4. 【清空干扰与清理锁】
+          rm -rf .repo/local_manifests/*.xml || true
+          find .repo -name "*.lock" -delete || true
 
-          # 【暴力补全】针对你报错的 golang-protobuf 路径进行强制补全
-          if [ ! -d "external/golang-protobuf" ]; then
-            echo "正在手动补全缺失的编译依赖: golang-protobuf..."
-            git clone --depth=1 android.googlesource.com external/golang-protobuf || true
+          # 5. 【执行强制同步】
+          echo "开始执行减负同步..."
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
+          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
+           
+          # 6. 【物理补全核心脚本】（保持你的原有逻辑）
+          if [ ! -f "build/blueprint/microfactory/microfactory.bash" ]; then
+            echo "检测到核心脚本缺失，正在物理补全..."
+            git clone --depth=1 https://android.googlesource.com/platform/build/blueprint build/blueprint || true
+          fi
+          if [ ! -d "prebuilts/go/linux-x86" ]; then
+            mkdir -p prebuilts/go
+            git clone --depth=1 https://android.googlesource.com/platform/prebuilts/go/linux-x86 prebuilts/go/linux-x86 || true
+          fi
+          if [ ! -d "prebuilts/bazel/common" ]; then
+            mkdir -p prebuilts/bazel
+            git clone --depth=1 https://android.googlesource.com/platform/prebuilts/bazel/common prebuilts/bazel/common || true
           fi
           
           # 7. 最后确认清理
           rm -rf vendor/prebuilts
-
-          
-
-      - name: 6. 针对 Surface i1135G7 执行 ART 专项温控编译 (Android 13 适配版)
-        run: | 
-          cd build_dir
-          source build/envsetup.sh
-          
-          # 1. 尝试 2026 标准三段式 Lunch (产品-发布版-变量)
-          # 对于 Android 13/14，release 字段通常是 trunk_staging
-          echo "正在尝试三段式 Lunch 命名..."
-          lunch bliss_x86_64-trunk_staging-userdebug || \
-          lunch android_x86_64-trunk_staging-userdebug || \
-          lunch aosp_x86_64-trunk_staging-userdebug || \
-          {
-              echo "常规命名均失败，开始深度探测源码树支持的完整列表..."
-              # 自动列出所有组合，提取包含 x86_64 且符合三段式规范的组合
-              LUNCH_LIST=$(lunch -l 2>&1 || printconfig 2>&1)
-              echo "可选组合列表: $LUNCH_LIST"
-              
-              AUTO_COMBO=$(echo "$LUNCH_LIST" | grep "x86_64" | grep "userdebug" | head -n 1 | awk '{print $1}')
-              
-              if [ -z "$AUTO_COMBO" ]; then
-                echo "探测失败，尝试手动拼接强制进入..."
-                AUTO_COMBO="bliss_x86_64-trunk_staging-userdebug"
-              fi
-              
-              echo "最终锁定目标: $AUTO_COMBO"
-              lunch "$AUTO_COMBO"
-          }
-
-          # 2. 注入针对 i1135G7 (Tiger Lake) 的发热优化环境变量
-          export TARGET_CPU_VARIANT='tigerlake'
-          export DEX2OAT_THREADS=4 
-          export ART_DEX2OAT_METHODS_FOR_COMPILATION=speed-profile
-          
-          # 3. 写入运行时温控属性 (调高 JIT 门槛减少 Surface 背景发热)
-          mkdir -p out/target/product/x86_64/system/
-          {
-            echo "dalvik.vm.jitthreshold=5120"
-            echo "dalvik.vm.dex2oat-threads=2"
-            echo "ro.dalvik.vm.native.bridge=libhoudini.so"
-          } >> out/target/product/x86_64/system/build.prop
-
-          # 4. 执行 ART 模块编译
-          echo "开始编译针对 i1135G7 优化的 ART 模块..."
-          m com.android.art -j$(nproc)
-      - name: 7. 整理并上传优化后的产物
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ART-Optimized-TigerLake-Android13
-          path: |
-            build_dir/out/target/product/x86_64/system/apex/com.android.art.apex
-            build_dir/out/target/product/x86_64/apex/com.android.art.apex
-            build_dir/out/target/product/x86_64/system/build.prop
-          retention-days: 7
-
-      - name: 8. 磁盘空间清理 (防止退出报错)
-        if: always()
-        run: |
-          # 编译完成后清理临时对象，确保 Artifact 上传有足够 buffer
-          rm -rf build_dir/out/target/product/x86_64/obj
-
-        
