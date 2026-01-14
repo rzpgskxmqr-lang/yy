@@ -45,131 +45,62 @@ jobs:
 
       - name: 3. 安装工具链与修复 Repo (2026 路径修正版)
         run: |
-          set -euo pipefail
-          sudo apt update
-          sudo apt install -y bc bison build-essential ccache curl flex g++-multilib \
-            gcc-multilib git git-lfs gnupg gperf lib32readline-dev lib32z1-dev \
-            libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
-            lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
-            python3-setuptools openjdk-17-jdk
-
-          mkdir -p "$HOME/bin"
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
-          
-          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "Google 源不可用，切换至 GitHub Raw 原始脚本路径..."
-            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
-          fi
-          
-          chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
-
-      - name: 4. 源码同步 (2026 自动识别排除修复版)
-        run: |
-         set -euo pipefail
-          mkdir -p build_dir && cd build_dir
+          mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 1. 【初始化减负】：通过 -g 参数在协议层面直接排除庞大的预编译、测试组和非 Intel 厂商组件
-          # 这能减少约 60% 的初始索引压力
-          echo "正在初始化并执行初步减负..."
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 \
-            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
-          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 \
-            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
-          repo init -u "$MANIFEST_URL" -b master --depth=1 \
-            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm
-
-          # 2. 【强硬抹除策略】：直接从本地清单物理删除故障仓库定义
-          # 2026 年 Repo 只要在清单里看到 vendor/prebuilts 就会去强制 fetch 那个不存在的 universe 分支
-          # 我们直接用 sed 把这个项目从本地所有 XML 清单中“物理蒸发”，让 Repo 彻底无视它
-          echo "执行物理级清单阉割，强制抹除故障项目..."
+          # 仅同步 ART 及核心组件，排除 arm/nvidia 等硬件代码
+          repo init -u ${{ github.event.inputs.manifest_url }} -b ${{ github.event.inputs.manifest_branch }} --depth=1 \
+            -g default,art,x86,intel -pdk,-vts,-arm,-amd,-nvidia
+          
+          # 物理屏蔽故障路径
           find .repo/manifests -name "*.xml" -exec sed -i '/vendor\/prebuilts/d' {} +
-          find .repo/manifest.xml -exec sed -i '/vendor\/prebuilts/d' {} + || true
+          
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach
 
-          # 3. 【清空干扰】：移除 local_manifests，防止 remove-project 找不到项目而二次报错
-          rm -rf .repo/local_manifests/*.xml || true
-
-          # 4. 清理残留锁
-          find .repo -name "*.lock" -delete || true
-
-          # 5. 【执行强制同步】：开启 --detach 忽略所有远程引用冲突
-          # 此时 Repo 已完全不知道有 vendor/prebuilts 存在，同步将极其顺滑
-          echo "开始执行减负同步..."
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
-          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
-           
-          if [ ! -f "build/blueprint/microfactory/microfactory.bash" ]; then
-            echo "检测到核心脚本缺失，正在物理补全..."
-           git clone --depth=1 https://android.googlesource.com/platform/build/blueprint build/blueprint || true
-
-          fi
-          if [ ! -d "prebuilts/go/linux-x86" ]; then
-            echo "正在补全 Go 编译器环境..."
-            mkdir -p prebuilts/go
-            git clone --depth=1 https://android.googlesource.com/platform/prebuilts/go/linux-x86 prebuilts/go/linux-x86 || true
-            fi
-            if [ ! -d "prebuilts/bazel/common" ]; then
-            echo "正在补全 Bazel 核心组件..."
-            mkdir -p prebuilts/bazel
-            git clone --depth=1 https://android.googlesource.com/platform/prebuilts/bazel/common prebuilts/bazel/common || true
-            fi
-          # 6. 最后确认清理
-          rm -rf vendor/prebuilts
-
-          # 5. 【手动排除】：同步后物理删除特定的故障目录，绕过 XML 校验报错
-          rm -rf vendor/prebuilts
-      - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
+      - name: 4. 注入发热优化与转译层配置
         run: |
-          set -euo pipefail
           cd build_dir
-          # 物理删除所有非 Intel 厂商的设备和供应商文件夹
-          rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
-          rm -rf vendor/nvidia* vendor/qualcomm* 2>/dev/null || true
+          # 预创建 system 目录用于注入属性
+          mkdir -p out/target/product/x86_64/system/
           
-          if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
-            rm -rf .repo
-          fi
+          # 写入温控优化属性：调高 JIT 门槛，降低后台编译强度
+          {
+            echo "# ART Thermal & Energy Optimization"
+            echo "dalvik.vm.dex2oat-threads=2"        # 后台编译限制为 2 线程
+            echo "dalvik.vm.boot-dex2oat-threads=4"   # 开机编译限制为 4 线程
+            echo "dalvik.vm.jitthreshold=5120"        # 减少 JIT 编译器活动频率
+            echo "ro.dalvik.vm.native.bridge=libhoudini.so"
+            echo "pm.dexopt.bg-dexopt=speed-profile"  # 后台优化改为省电模式
+          } >> out/target/product/x86_64/system/build.prop
+          
+          # 开启 ARM 架构支持声明
+          mkdir -p device/generic/common/
+          echo "PRODUCT_ABI_LIST_EXTRA := armeabi-v7a, armeabi, arm64-v8a" >> device/generic/common/device.mk
 
-      - name: 6. 针对 Surface i1135G7 执行专项优化编译
-        run: | 
-          # 1. 禁用 -u 以兼容 AOSP 脚本，仅保留 -e (出错即停)
-          set -e
+      - name: 5. 针对 i1135G7 执行温控优化编译
+        run: |
           cd build_dir
-          
-          # 2. 初始化环境
           source build/envsetup.sh
           
-          # 3. 注入 Surface i1135G7 专项优化参数
-          export TARGET_CPU_VARIANT='tigerlake'
-          export BOARD_GPU_DRIVERS='iris'
-          export TARGET_SURFACE=true
-          export BLISS_BUILD_VARIANT='gapps'
+          # 选择 x86_64 目标
+          lunch bliss_x86_64-userdebug || lunch aosp_x86_64-userdebug
           
-          # 4. 稳健的 Lunch 逻辑 (针对 2026 Bliss OS 优化)
-          echo "正在选择编译目标..."
-          # 直接尝试标准组合，如果失败则尝试带 trunk 的新组合
-          # 这样写避开了 awk/sed 过滤不净导致的语法错误
-          lunch bliss_x86_64-userdebug || lunch bliss_x86_64-trunk_staging-userdebug || {
-              echo "手动探测可用组合..."
-              # 如果硬编码失败，尝试从环境列表中提取第一个匹配项
-              LUNCH_TARGET=$(lunch 2>&1 | grep -oE "bliss_x86_64-[a-z_0-9\-]+" | head -n 1)
-              lunch "$LUNCH_TARGET"
-          }
-
-          # 5. 执行编译
-          # 2026 AOSP 规范建议直接使用 m 命令
-          echo "开始执行编译..."
-          m installclean
-          m iso_img -j4
-
+          # --- 编译时优化变量 ---
+          export TARGET_CPU_VARIANT='tigerlake'      # 启用 TigerLake 优化指令
+          export DEX2OAT_THREADS=4                   # 限制编译时的最大核心占用
+          export ART_DEX2OAT_METHODS_FOR_COMPILATION=speed-profile # 性能与功耗平衡策略
+          export TARGET_HAS_NATIVEBRIDGE=true        # 启用转译层支持
           
-      - name: 7. 上传结果
+          echo "开始编译针对 i1135G7 优化的 ART 模块..."
+          m com.android.art
+
+      - name: 6. 上传 ART 优化产物
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: BlissOS-17-Surface-i1135G7
-          path: build_dir/out/target/product/x86_64/*.iso
-          retention-days: 1
+          name: ART-TigerLake-Thermal-Optimized
+          path: |
+            build_dir/out/target/product/x86_64/system/apex/com.android.art.apex
+            build_dir/out/target/product/x86_64/apex/com.android.art.apex
+          retention-days: 7
