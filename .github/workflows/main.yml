@@ -65,8 +65,7 @@ jobs:
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
       - name: 4. 源码同步 (2026 自动识别排除修复版)
-        run: |
-              - name: 4. 源码同步 (2026 自动识别排除修复版 + Python 兼容补丁)
+       
         run: |
           set -euo pipefail
           mkdir -p build_dir && cd build_dir
@@ -105,70 +104,41 @@ jobs:
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
            
-          # 6. 【物理补全核心脚本】（保持你的原有逻辑）
-          - name: 6. 针对 Surface i1135G7 执行 ART 专项编译 (物理修复版)
-           run: |
-          # 必须先进入同步好的目录
+         -name: 6. 专项编译与产物上传
+        run: |
           cd build_dir
+          echo "补齐依赖中..."
+          [ -d "external/golang-protobuf" ] || git clone --depth=1 android.googlesource.com external/golang-protobuf || true
+          [ -d "build/blueprint" ] || git clone --depth=1 android.googlesource.com build/blueprint || true
           
-          echo "=== 正在执行缺啥补啥逻辑 ==="
-          # 物理补齐 Soong 报错的 Go 依赖，确保 lunch 正常解析
-          if [ ! -d "external/golang-protobuf" ]; then
-            git clone --depth=1 android.googlesource.com external/golang-protobuf || true
-          fi
-          
-          # 物理补齐 Blueprint (Soong 核心逻辑)
-          if [ ! -d "build/blueprint" ]; then
-            git clone --depth=1 android.googlesource.com build/blueprint || true
-          fi
-
-          echo "=== 初始化编译环境 ==="
+          echo "环境初始化..."
           source build/envsetup.sh
-          
-          # 2026 核心变量：忽略非核心组件缺失
           export ALLOW_MISSING_DEPENDENCIES=true
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
-
-          echo "=== 执行三段式 Lunch 探测 ==="
-          # 针对 2026 规范尝试补全 trunk_staging 字段
-          lunch bliss_x86_64-trunk_staging-userdebug || \
-          lunch android_x86_64-trunk_staging-userdebug || \
-          lunch bliss_x86_64-userdebug || {
-              echo "常规 Lunch 失败，自动提取可用组合..."
-              LUNCH_TARGET=$(lunch -l 2>&1 | grep "x86_64" | head -n 1 | awk '{print $1}')
-              lunch "$LUNCH_TARGET"
+          
+          echo "执行 Lunch..."
+          lunch bliss_x86_64-trunk_staging-userdebug || lunch bliss_x86_64-userdebug || {
+            LUNCH_TARGET=$(lunch -l 2>&1 | grep "x86_64" | head -n 1 | awk '{print $1}')
+            lunch "$LUNCH_TARGET"
           }
 
-          echo "=== 注入 i1135G7 Tiger Lake 优化参数 ==="
+          echo "注入 TigerLake 优化参数..."
           export TARGET_CPU_VARIANT='tigerlake'
-          export DEX2OAT_THREADS=4 
+          export DEX2OAT_THREADS=4
           export ART_DEX2OAT_METHODS_FOR_COMPILATION=speed-profile
-          
-          # 运行时发热优化：调高 JIT 门槛
           mkdir -p out/target/product/x86_64/system/
           echo "dalvik.vm.jitthreshold=5120" >> out/target/product/x86_64/system/build.prop
-
-          echo "=== 开始编译 ART 模块 ==="
-          # 只编译核心 ART APEX，跳过臃肿的 ISO 打包过程
+          
+          echo "开始编译 ART 模块..."
           m com.android.art -j4
-       - name: 7. 整理并上传针对 i1135G7 优化的产物
+
+      - name: 7. 上传结果
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ART-Optimized-TigerLake-APEX
-          # 2026 路径规范：搜寻 system 分区和 apex 目录下的所有相关模块
+          name: ART-Optimized-i1135G7
           path: |
             build_dir/out/target/product/x86_64/system/apex/com.android.art.apex
             build_dir/out/target/product/x86_64/apex/com.android.art.apex
             build_dir/out/target/product/x86_64/system/build.prop
-          # 建议保留 7 天，方便调试
-          retention-days: 7
-
-      - name: 8. 编译后磁盘空间检查与清理 (防止退出挂起)
-        if: always()
-        run: |
-          echo "正在清理编译中间文件以释放空间..."
-          # 只删除庞大的中间对象目录 (.obj)，保留生成的产物
-          rm -rf build_dir/out/target/product/x86_64/obj || true
-          df -h
 
