@@ -98,7 +98,8 @@ jobs:
           # 4. 【清空干扰与清理锁】
           rm -rf .repo/local_manifests/*.xml || true
           find .repo -name "*.lock" -delete || true
-
+          [ -d "external/golang-protobuf" ] || git clone --depth=1 android.googlesource.com external/golang-protobuf || true
+          [ -d "build/blueprint" ] || git clone --depth=1 android.googlesource.com build/blueprint || true
           # 5. 【执行强制同步】
           echo "开始执行减负同步..."
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
@@ -106,10 +107,8 @@ jobs:
            
          -name: 6. 专项编译与产物上传
         run: |
+        
           cd build_dir
-          echo "补齐依赖中..."
-          [ -d "external/golang-protobuf" ] || git clone --depth=1 android.googlesource.com external/golang-protobuf || true
-          [ -d "build/blueprint" ] || git clone --depth=1 android.googlesource.com build/blueprint || true
           
           echo "环境初始化..."
           source build/envsetup.sh
