@@ -121,7 +121,7 @@ jobs:
             git clone --depth=1 android.googlesource.com build/blueprint || true
           fi
           set -e
-          cd build_dir
+          cd /home/runner/work/yy/y/build_dir
           
           # 2. 初始化环境
           source build/envsetup.sh
