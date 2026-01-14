@@ -106,7 +106,7 @@ jobs:
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
            
           # 6. 【物理补全核心脚本】（保持你的原有逻辑）
-                - name: 6. 针对 Surface i1135G7 执行 ART 专项编译 (物理修复版)
+          - name: 6. 针对 Surface i1135G7 执行 ART 专项编译 (物理修复版)
            run: |
           # 必须先进入同步好的目录
           cd build_dir
