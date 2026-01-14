@@ -120,14 +120,7 @@ jobs:
           if [ ! -d "build/blueprint" ]; then
             git clone --depth=1 android.googlesource.com build/blueprint || true
           fi
-          set -e
-          cd /home/runner/work/yy/y/build_dir
-          
-          # 2. 初始化环境
-          source build/envsetup.sh
-          
-          export ALLOW_MISSING_DEPENDENCIES=true
-          export SOONG_ALLOW_MISSING_DEPENDENCIES=true
+         
              
 
             
@@ -137,7 +130,17 @@ jobs:
             echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
             rm -rf .repo
           fi
+           set -e
+          cd "$GITHUB_WORKSPACE" || cd /home/runner/work/yy/y/build_dir
 
+          
+          # 2. 初始化环境
+          source build/envsetup.sh
+          
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export SOONG_ALLOW_MISSING_DEPENDENCIES=true
+
+          
       - name: 6. 针对 Surface i1135G7 执行专项优化编译
         run: | 
           # 1. 禁用 -u 以兼容 AOSP 脚本，仅保留 -e (出错即停)
