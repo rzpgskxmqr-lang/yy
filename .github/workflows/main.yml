@@ -106,18 +106,71 @@ jobs:
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
            
           # 6. 【物理补全核心脚本】（保持你的原有逻辑）
-          if [ ! -f "build/blueprint/microfactory/microfactory.bash" ]; then
-            echo "检测到核心脚本缺失，正在物理补全..."
-            git clone --depth=1 https://android.googlesource.com/platform/build/blueprint build/blueprint || true
+          cd build_dir
+
+          # --- [缺啥补啥] 物理补齐 Soong 报错的 Go 依赖，不改第 4 步 ---
+          echo "检测到 Soong 编译系统依赖缺失，正在定向物理补齐..."
+          
+          # 补齐报错频率最高的 golang-protobuf (2026 编译核心)
+          if [ ! -d "external/golang-protobuf" ]; then
+            git clone --depth=1 android.googlesource.com external/golang-protobuf || true
           fi
+
+          # 补齐 go 编译器（如果同步漏了它，lunch 绝对过不去）
           if [ ! -d "prebuilts/go/linux-x86" ]; then
             mkdir -p prebuilts/go
-            git clone --depth=1 https://android.googlesource.com/platform/prebuilts/go/linux-x86 prebuilts/go/linux-x86 || true
+            git clone --depth=1 android.googlesource.com prebuilts/go/linux-x86 || true
           fi
-          if [ ! -d "prebuilts/bazel/common" ]; then
-            mkdir -p prebuilts/bazel
-            git clone --depth=1 https://android.googlesource.com/platform/prebuilts/bazel/common prebuilts/bazel/common || true
+
+          # 补齐 blueprint (Soong 的核心构建逻辑)
+          if [ ! -d "build/blueprint" ]; then
+            git clone --depth=1 android.googlesource.com build/blueprint || true
           fi
+          
+          # -------------------------------------------------------
+
+          source build/envsetup.sh
+          
+          # 注入 2026 核心容错变量：允许非核心依赖缺失，这对只编译 ART 模块至关重要
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export SOONG_ALLOW_MISSING_DEPENDENCIES=true
+
+          echo "尝试三段式 Lunch (产品-发布版-变量)..."
+          # 适配 2026 规范：加入 trunk_staging 字段
+          lunch bliss_x86_64-trunk_staging-userdebug || \
+          lunch android_x86_64-trunk_staging-userdebug || \
+          lunch bliss_x86_64-userdebug || {
+              echo "常规 Lunch 失败，探测可用组合..."
+              LUNCH_TARGET=$(lunch -l 2>&1 | grep "x86_64" | head -n 1 | awk '{print $1}')
+              lunch "$LUNCH_TARGET"
+          }
+
+          # --- i1135G7 Tiger Lake 专项调优与发热优化 ---
+          export TARGET_CPU_VARIANT='tigerlake'
+          export DEX2OAT_THREADS=4 
+          export ART_DEX2OAT_METHODS_FOR_COMPILATION=speed-profile
+          
+          # 运行时发热优化：调高 JIT 门槛，减少 Surface 运行时的背景功耗
+          mkdir -p out/target/product/x86_64/system/
+          {
+            echo "dalvik.vm.jitthreshold=5120"
+            echo "dalvik.vm.dex2oat-threads=2"
+            echo "ro.dalvik.vm.native.bridge=libhoudini.so"
+          } >> out/target/product/x86_64/system/build.prop
+
+          echo "开始编译针对 i1135G7 优化的 ART APEX 模块..."
+          # 仅编译 com.android.art，极大节省资源并绕过全量系统的依赖深坑
+          m com.android.art -j4
+
+      - name: 7. 上传 ART 优化产物
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ART-Optimized-i1135G7-APEX
+          path: |
+            build_dir/out/target/product/x86_64/system/apex/com.android.art.apex
+            build_dir/out/target/product/x86_64/apex/com.android.art.apex
+          retention-days: 7
           
           # 7. 最后确认清理
           rm -rf vendor/prebuilts
