@@ -122,54 +122,56 @@ jobs:
           rm -rf vendor/prebuilts
       - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
         run: |
-          set -euo pipefail
+          run: | 
           cd build_dir
-          # 物理删除所有非 Intel 厂商的设备和供应商文件夹
-          rm -rf device/generic/amd* vendor/amd 2>/dev/null || true
-          rm -rf vendor/nvidia* vendor/qualcomm* 2>/dev/null || true
-          
-          if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
-            rm -rf .repo
-          fi
-
-      - name: 6. 针对 Surface i1135G7 执行专项优化编译
-        run: | 
-          # 1. 禁用 -u 以兼容 AOSP 脚本，仅保留 -e (出错即停)
-          set -e
-          cd build_dir
-          
-          # 2. 初始化环境
           source build/envsetup.sh
           
-          # 3. 注入 Surface i1135G7 专项优化参数
-          export TARGET_CPU_VARIANT='tigerlake'
-          export BOARD_GPU_DRIVERS='iris'
-          export TARGET_SURFACE=true
-          export BLISS_BUILD_VARIANT='gapps'
-          
-          # 4. 稳健的 Lunch 逻辑 (针对 2026 Bliss OS 优化)
-          echo "正在选择编译目标..."
-          # 直接尝试标准组合，如果失败则尝试带 trunk 的新组合
-          # 这样写避开了 awk/sed 过滤不净导致的语法错误
-          lunch bliss_x86_64-userdebug || lunch bliss_x86_64-trunk_staging-userdebug || {
-              echo "手动探测可用组合..."
-              # 如果硬编码失败，尝试从环境列表中提取第一个匹配项
-              LUNCH_TARGET=$(lunch 2>&1 | grep -oE "bliss_x86_64-[a-z_0-9\-]+" | head -n 1)
-              lunch "$LUNCH_TARGET"
+          # 1. 尝试 2026 标准三段式 Lunch (产品-发布版-变量)
+          # 对于 Android 13/14，release 字段通常是 trunk_staging
+          echo "正在尝试三段式 Lunch 命名..."
+          lunch bliss_x86_64-trunk_staging-userdebug || \
+          lunch android_x86_64-trunk_staging-userdebug || \
+          lunch aosp_x86_64-trunk_staging-userdebug || \
+          {
+              echo "常规命名均失败，开始深度探测源码树支持的完整列表..."
+              # 自动列出所有组合，提取包含 x86_64 且符合三段式规范的组合
+              LUNCH_LIST=$(lunch -l 2>&1 || printconfig 2>&1)
+              echo "可选组合列表: $LUNCH_LIST"
+              
+              AUTO_COMBO=$(echo "$LUNCH_LIST" | grep "x86_64" | grep "userdebug" | head -n 1 | awk '{print $1}')
+              
+              if [ -z "$AUTO_COMBO" ]; then
+                echo "探测失败，尝试手动拼接强制进入..."
+                AUTO_COMBO="bliss_x86_64-trunk_staging-userdebug"
+              fi
+              
+              echo "最终锁定目标: $AUTO_COMBO"
+              lunch "$AUTO_COMBO"
           }
 
-          # 5. 执行编译
-          # 2026 AOSP 规范建议直接使用 m 命令
-          echo "开始执行编译..."
-          m installclean
-          m iso_img -j4
-
+          # 2. 注入针对 i1135G7 (Tiger Lake) 的发热优化环境变量
+          export TARGET_CPU_VARIANT='tigerlake'
+          export DEX2OAT_THREADS=4 
+          export ART_DEX2OAT_METHODS_FOR_COMPILATION=speed-profile
           
-      - name: 7. 上传结果
+          # 3. 写入运行时温控属性 (调高 JIT 门槛减少 Surface 背景发热)
+          mkdir -p out/target/product/x86_64/system/
+          {
+            echo "dalvik.vm.jitthreshold=5120"
+            echo "dalvik.vm.dex2oat-threads=2"
+            echo "ro.dalvik.vm.native.bridge=libhoudini.so"
+          } >> out/target/product/x86_64/system/build.prop
+
+          # 4. 执行 ART 模块编译
+          echo "开始编译针对 i1135G7 优化的 ART 模块..."
+          m com.android.art -j$(nproc)
+
+      - name: 7. 上传 ART 模块产物
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: BlissOS-17-Surface-i1135G7
-          path: build_dir/out/target/product/x86_64/*.iso
-          retention-days: 1
+          name: ART-Optimized-i1135G7-APEX
+          path: |
+            build_dir/out/target/product/x86_64/system/apex/com.android.art.apex
+            build_dir/out/target/product/x86_64/apex/com.android.art.apex
+          retention-days: 7
