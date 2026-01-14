@@ -121,7 +121,8 @@ jobs:
             git clone --depth=1 android.googlesource.com build/blueprint || true
           fi
          
-             
+            set -e
+          cd "$GITHUB_WORKSPACE" || cd /home/runner/work/yy/y/build_dir 
 
             
           # 6. 最后确认清理
@@ -130,11 +131,12 @@ jobs:
             echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
             rm -rf .repo
           fi
-           set -e
-          cd "$GITHUB_WORKSPACE" || cd /home/runner/work/yy/y/build_dir
+           
 
           
-          # 2. 初始化环境
+           
+             # 初始化环境
+          set +u
           source build/envsetup.sh
           
           export ALLOW_MISSING_DEPENDENCIES=true
