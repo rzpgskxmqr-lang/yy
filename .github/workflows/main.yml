@@ -72,50 +72,28 @@ jobs:
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 1. 【初始化减负】
-          echo "正在初始化并执行初步减负..."
-          # 这里先执行 init 即使报错也不退出（因为我们要先拿到脚本文件才能修复）
+          echo "正在初始化并放宽同步限制以补全 Go/Protobuf 依赖..."
+          # 2026 修正：确保 tools,soong 分组被包含，否则无法执行 lunch
           repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 \
-            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
+            -g default,art,x86,intel,tools,soong \
+            -vts,-arm,-amd,-nvidia,-qualcomm || \
           repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 \
-            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
-          repo init -u "$MANIFEST_URL" -b master --depth=1 \
-            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || true
+            -g default,art,x86,intel,tools,soong \
+            -vts,-arm,-amd,-nvidia,-qualcomm
 
-          # 2. 【核心修复】：物理抹除导致 Python 3.12 崩溃的 Logger 参数
-          # 解决：TypeError: Logger._log() got an unexpected keyword argument 'file'
-          echo "正在对 Repo 内部脚本进行 Python 3.12 兼容性热补丁..."
-          if [ -d ".repo/repo" ]; then
-            find .repo/repo -name "*.py" -exec sed -i 's/, file=sys.stderr//g' {} +
-            echo "补丁应用成功。"
-          fi
-
-          # 3. 【强硬抹除策略】：物理删除故障仓库定义
-          echo "执行物理级清单阉割，强制抹除故障项目..."
+          # 物理抹除故障项目（保持你的有效逻辑）
+          echo "执行物理级清单阉割..."
           find .repo/manifests -name "*.xml" -exec sed -i '/vendor\/prebuilts/d' {} +
           find .repo/manifest.xml -exec sed -i '/vendor\/prebuilts/d' {} + || true
 
-          # 4. 【清空干扰与清理锁】
-          rm -rf .repo/local_manifests/*.xml || true
-          find .repo -name "*.lock" -delete || true
+          # 执行同步 (增加 --force-sync 确保路径修复)
+          echo "开始执行同步..."
+          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --detach
 
-          # 5. 【执行强制同步】
-          echo "开始执行减负同步..."
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
-          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
-           
-          # 6. 【物理补全核心脚本】（保持你的原有逻辑）
-          if [ ! -f "build/blueprint/microfactory/microfactory.bash" ]; then
-            echo "检测到核心脚本缺失，正在物理补全..."
-            git clone --depth=1 https://android.googlesource.com/platform/build/blueprint build/blueprint || true
-          fi
-          if [ ! -d "prebuilts/go/linux-x86" ]; then
-            mkdir -p prebuilts/go
-            git clone --depth=1 https://android.googlesource.com/platform/prebuilts/go/linux-x86 prebuilts/go/linux-x86 || true
-          fi
-          if [ ! -d "prebuilts/bazel/common" ]; then
-            mkdir -p prebuilts/bazel
-            git clone --depth=1 https://android.googlesource.com/platform/prebuilts/bazel/common prebuilts/bazel/common || true
+          # 【暴力补全】针对你报错的 golang-protobuf 路径进行强制补全
+          if [ ! -d "external/golang-protobuf" ]; then
+            echo "正在手动补全缺失的编译依赖: golang-protobuf..."
+            git clone --depth=1 android.googlesource.com external/golang-protobuf || true
           fi
           
           # 7. 最后确认清理
