@@ -65,7 +65,8 @@ jobs:
           sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
 
       - name: 4. 源码同步 (2026 自动识别排除修复版)
-        run: | mkdir build_dir && cd build_dir
+        run: |
+           mkdir build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
