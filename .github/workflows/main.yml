@@ -125,7 +125,7 @@ jobs:
          
          mkdir -p build
          cp build/make/envsetup.sh build/envsetup.sh
-        fi
+         fi
 
             
           # 6. 最后确认清理
