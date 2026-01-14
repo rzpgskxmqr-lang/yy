@@ -118,7 +118,7 @@ jobs:
              mkdir -p external/golang-protobuf
           
           if [ ! -d "build/blueprint" ]; then
-            git clone --depth=1 android.googlesource.com build/blueprint || true
+            git clone --depth=1 https://android.googlesource.com/platform/build/blueprint || true
           fi
          
             set -e
