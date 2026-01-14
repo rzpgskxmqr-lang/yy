@@ -123,30 +123,67 @@ jobs:
 
           
 
-      - name: 5. 针对 i1135G7 执行温控优化编译
-        run: |
+      -       - name: 6. 针对 Surface i1135G7 执行 ART 专项温控编译 (Android 13 适配版)
+        run: | 
+          # 进入源码目录并加载环境
           cd build_dir
           source build/envsetup.sh
           
-          # 选择 x86_64 目标
-          lunch bliss_x86_64-userdebug || lunch aosp_x86_64-userdebug
-          
-          # --- 编译时优化变量 ---
-          export TARGET_CPU_VARIANT='tigerlake'      # 启用 TigerLake 优化指令
-          export DEX2OAT_THREADS=4                   # 限制编译时的最大核心占用
-          export ART_DEX2OAT_METHODS_FOR_COMPILATION=speed-profile # 性能与功耗平衡策略
-          export TARGET_HAS_NATIVEBRIDGE=true        # 启用转译层支持
-          
-          echo "开始编译针对 i1135G7 优化的 ART 模块..."
-          m com.android.art
+          # --- 自动探测并执行 Lunch ---
+          echo "正在搜索适配 Android 13 的 x86_64 编译组合..."
+          # 优先级：Bliss 官方名 -> 通用安卓名 -> AOSP 名 -> 自动过滤列表
+          lunch bliss_x86_64-userdebug || \
+          lunch android_x86_64-userdebug || \
+          lunch aosp_x86_64-userdebug || \
+          {
+              echo "常规命名失败，尝试从系统列表中提取有效 x86_64 组合..."
+              # 自动抓取包含 x86_64 的 userdebug 组合
+              AUTO_COMBO=$(lunch 2>&1 | grep -i "x86_64" | grep "userdebug" | head -n 1 | awk '{print $1}' | sed 's/^[ \t]*//')
+              if [ -z "$AUTO_COMBO" ]; then
+                echo "错误：无法自动识别 x86_64 编译目标，请检查设备树(Device Tree)是否同步完整。"
+                exit 1
+              fi
+              echo "自动探测到组合: $AUTO_COMBO"
+              lunch "$AUTO_COMBO"
+          }
 
-      - name: 6. 上传 ART 优化产物
+          # --- 注入 i1135G7 (Tiger Lake) 专项优化环境变量 ---
+          # 1. 指令集优化：利用 11 代酷睿架构优势
+          export TARGET_CPU_VARIANT='tigerlake'
+          
+          # 2. 发热优化：限制编译线程防止 Runner 崩溃，同时设定运行时的温控基准
+          export DEX2OAT_THREADS=4 
+          export ART_DEX2OAT_METHODS_FOR_COMPILATION=speed-profile
+          
+          # 3. 运行环境调校：写入 build.prop 降低 Surface 运行时 JIT 负载
+          mkdir -p out/target/product/x86_64/system/
+          {
+            echo "# ART Optimized for i1135G7"
+            echo "dalvik.vm.jitthreshold=5120"        # 提升 JIT 门槛，减少背景热量
+            echo "dalvik.vm.dex2oat-threads=2"        # 后台优化限制为双线程
+            echo "ro.dalvik.vm.native.bridge=libhoudini.so"
+          } >> out/target/product/x86_64/system/build.prop
+
+          # --- 执行 ART 模块编译 ---
+          # Android 13 标准下，ART 是核心 Mainline 模块
+          echo "开始编译针对 i1135G7 优化的 ART APEX 模块..."
+          m com.android.art -j4
+
+      - name: 7. 整理并上传优化后的产物
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ART-TigerLake-Thermal-Optimized
+          name: ART-Optimized-TigerLake-Android13
           path: |
             build_dir/out/target/product/x86_64/system/apex/com.android.art.apex
             build_dir/out/target/product/x86_64/apex/com.android.art.apex
+            build_dir/out/target/product/x86_64/system/build.prop
           retention-days: 7
-         
+
+      - name: 8. 磁盘空间清理 (防止退出报错)
+        if: always()
+        run: |
+          # 编译完成后清理临时对象，确保 Artifact 上传有足够 buffer
+          rm -rf build_dir/out/target/product/x86_64/obj
+
+        
