@@ -126,52 +126,49 @@ jobs:
           cd build_dir
           source build/envsetup.sh
           
-          # 1. 尝试 2026 标准三段式 Lunch (产品-发布版-变量)
-          # 对于 Android 13/14，release 字段通常是 trunk_staging
-          echo "正在尝试三段式 Lunch 命名..."
+          # --- 核心修正：适配 <产品>-<释放>-<变体> 三段式格式 ---
+          echo "正在尝试适配 Android 13/14 混合规范的 Lunch 组合..."
+          
+          # 尝试补全中间的 release 字段 (trunk_staging 是 2026 年的标准默认值)
           lunch bliss_x86_64-trunk_staging-userdebug || \
           lunch android_x86_64-trunk_staging-userdebug || \
           lunch aosp_x86_64-trunk_staging-userdebug || \
           {
-              echo "常规命名均失败，开始深度探测源码树支持的完整列表..."
-              # 自动列出所有组合，提取包含 x86_64 且符合三段式规范的组合
-              LUNCH_LIST=$(lunch -l 2>&1 || printconfig 2>&1)
-              echo "可选组合列表: $LUNCH_LIST"
-              
-              AUTO_COMBO=$(echo "$LUNCH_LIST" | grep "x86_64" | grep "userdebug" | head -n 1 | awk '{print $1}')
+              echo "常规三段式命名失败，正在从源码树实时探测有效的 Lunch 组合..."
+              # 自动抓取包含 x86_64 的完整组合字符串
+              # 逻辑：列出所有组合 -> 过滤 x86_64 -> 过滤 userdebug -> 取第一个非空行
+              AUTO_COMBO=$(lunch -l 2>&1 | grep "x86_64" | grep "userdebug" | head -n 1 | awk '{print $1}')
               
               if [ -z "$AUTO_COMBO" ]; then
-                echo "探测失败，尝试手动拼接强制进入..."
+                echo "致命错误：在当前设备树中未发现任何有效组合。请检查 vendor/bliss 目录是否存在。"
+                # 尝试最后的兜底逻辑：手动拼接
                 AUTO_COMBO="bliss_x86_64-trunk_staging-userdebug"
               fi
               
-              echo "最终锁定目标: $AUTO_COMBO"
+              echo "最终尝试组合: $AUTO_COMBO"
               lunch "$AUTO_COMBO"
           }
 
-          # 2. 注入针对 i1135G7 (Tiger Lake) 的发热优化环境变量
+          # --- 针对 i1135G7 的发热优化与 ART 编译 ---
           export TARGET_CPU_VARIANT='tigerlake'
-          export DEX2OAT_THREADS=4 
+          export DEX2OAT_THREADS=4
           export ART_DEX2OAT_METHODS_FOR_COMPILATION=speed-profile
           
-          # 3. 写入运行时温控属性 (调高 JIT 门槛减少 Surface 背景发热)
+          # 写入温控属性到编译输出环境
           mkdir -p out/target/product/x86_64/system/
           {
             echo "dalvik.vm.jitthreshold=5120"
             echo "dalvik.vm.dex2oat-threads=2"
-            echo "ro.dalvik.vm.native.bridge=libhoudini.so"
           } >> out/target/product/x86_64/system/build.prop
 
-          # 4. 执行 ART 模块编译
-          echo "开始编译针对 i1135G7 优化的 ART 模块..."
-          m com.android.art -j$(nproc)
+          echo "开始编译针对 i1135G7 优化的 ART APEX 模块..."
+          m com.android.art -j4
 
-      - name: 7. 上传 ART 模块产物
+      - name: 7. 上传产物
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ART-Optimized-i1135G7-APEX
+          name: ART-Optimized-i1135G7
           path: |
             build_dir/out/target/product/x86_64/system/apex/com.android.art.apex
             build_dir/out/target/product/x86_64/apex/com.android.art.apex
-          retention-days: 7
