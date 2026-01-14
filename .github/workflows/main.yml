@@ -121,8 +121,19 @@ jobs:
             git clone --depth=1 https://android.googlesource.com/platform/build/blueprint || true
           fi
          
-            set -e
-          cd "$GITHUB_WORKSPACE" || cd /home/runner/work/yy/y/build_dir 
+            cd /home/runner/work/yy/y/build_dir || exit 1
+
+          # 2. 【关键修复】检查 build 目录是否存在，如果缺失则必须补全，否则无法 source
+          if [ ! -f "build/envsetup.sh" ]; then
+          echo "检测到核心脚本 build/envsetup.sh 缺失，正在尝试从 build/make 恢复..."
+          # 2026 年规范：build/envsetup.sh 实际上是 build/make/envsetup.sh 的符号链接
+          if [ ! -d "build/make" ]; then
+          git clone --depth=1 android.googlesource.com build/make
+         fi
+         # 物理创建 build 目录并链接脚本
+       mkdir -p build
+       cp build/make/envsetup.sh build/envsetup.sh
+        fi
 
             
           # 6. 最后确认清理
