@@ -115,9 +115,31 @@ jobs:
             mkdir -p prebuilts/bazel
             git clone --depth=1 https://android.googlesource.com/platform/prebuilts/bazel/common prebuilts/bazel/common || true
             fi
+             mkdir -p external/golang-protobuf
+          git clone --depth=1 android.googlesource.com external/golang-protobuf || true
+          
+          if [ ! -d "build/blueprint" ]; then
+            git clone --depth=1 android.googlesource.com build/blueprint || true
+          fi
+
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export SOONG_ALLOW_MISSING_DEPENDENCIES=true
+             
+
+            
           # 6. 最后确认清理
           rm -rf vendor/prebuilts
+         if [[ "$PRUNE_REPO" == "true" ]]; then
+            echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
+            rm -rf .repo
+          fi
 
+      - name: 6. 针对 Surface i1135G7 执行专项优化编译
+        run: | 
+          # 1. 禁用 -u 以兼容 AOSP 脚本，仅保留 -e (出错即停)
+          set -e
+          cd build_dir
           # 5. 【手动排除】：同步后物理删除特定的故障目录，绕过 XML 校验报错
           rm -rf vendor/prebuilts
       - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
