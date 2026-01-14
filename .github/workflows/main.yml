@@ -120,6 +120,12 @@ jobs:
           if [ ! -d "build/blueprint" ]; then
             git clone --depth=1 android.googlesource.com build/blueprint || true
           fi
+          set -e
+          cd build_dir
+          
+          # 2. 初始化环境
+          source build/envsetup.sh
+          
           export ALLOW_MISSING_DEPENDENCIES=true
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
              
