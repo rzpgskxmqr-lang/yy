@@ -122,9 +122,6 @@ jobs:
           rm -rf vendor/prebuilts
       - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
         run: |
-          run: | 
-          cd build_dir
-          source build/envsetup.sh
           
           # --- 核心修正：适配 <产品>-<释放>-<变体> 三段式格式 ---
           echo "正在尝试适配 Android 13/14 混合规范的 Lunch 组合..."
