@@ -123,7 +123,7 @@ jobs:
 
           
 
-      -       - name: 6. 针对 Surface i1135G7 执行 ART 专项温控编译 (Android 13 适配版)
+       - name: 6. 针对 Surface i1135G7 执行 ART 专项温控编译 (Android 13 适配版)
         run: | 
           # 进入源码目录并加载环境
           cd build_dir
