@@ -125,50 +125,48 @@ jobs:
 
       - name: 6. 针对 Surface i1135G7 执行 ART 专项温控编译 (Android 13 适配版)
         run: | 
-          # 进入源码目录并加载环境
           cd build_dir
           source build/envsetup.sh
           
-          # --- 自动探测并执行 Lunch ---
-          echo "正在搜索适配 Android 13 的 x86_64 编译组合..."
-          # 优先级：Bliss 官方名 -> 通用安卓名 -> AOSP 名 -> 自动过滤列表
-          lunch bliss_x86_64-userdebug || \
-          lunch android_x86_64-userdebug || \
-          lunch aosp_x86_64-userdebug || \
+          # 1. 尝试 2026 标准三段式 Lunch (产品-发布版-变量)
+          # 对于 Android 13/14，release 字段通常是 trunk_staging
+          echo "正在尝试三段式 Lunch 命名..."
+          lunch bliss_x86_64-trunk_staging-userdebug || \
+          lunch android_x86_64-trunk_staging-userdebug || \
+          lunch aosp_x86_64-trunk_staging-userdebug || \
           {
-              echo "常规命名失败，尝试从系统列表中提取有效 x86_64 组合..."
-              # 自动抓取包含 x86_64 的 userdebug 组合
-              AUTO_COMBO=$(lunch 2>&1 | grep -i "x86_64" | grep "userdebug" | head -n 1 | awk '{print $1}' | sed 's/^[ \t]*//')
+              echo "常规命名均失败，开始深度探测源码树支持的完整列表..."
+              # 自动列出所有组合，提取包含 x86_64 且符合三段式规范的组合
+              LUNCH_LIST=$(lunch -l 2>&1 || printconfig 2>&1)
+              echo "可选组合列表: $LUNCH_LIST"
+              
+              AUTO_COMBO=$(echo "$LUNCH_LIST" | grep "x86_64" | grep "userdebug" | head -n 1 | awk '{print $1}')
+              
               if [ -z "$AUTO_COMBO" ]; then
-                echo "错误：无法自动识别 x86_64 编译目标，请检查设备树(Device Tree)是否同步完整。"
-                exit 1
+                echo "探测失败，尝试手动拼接强制进入..."
+                AUTO_COMBO="bliss_x86_64-trunk_staging-userdebug"
               fi
-              echo "自动探测到组合: $AUTO_COMBO"
+              
+              echo "最终锁定目标: $AUTO_COMBO"
               lunch "$AUTO_COMBO"
           }
 
-          # --- 注入 i1135G7 (Tiger Lake) 专项优化环境变量 ---
-          # 1. 指令集优化：利用 11 代酷睿架构优势
+          # 2. 注入针对 i1135G7 (Tiger Lake) 的发热优化环境变量
           export TARGET_CPU_VARIANT='tigerlake'
-          
-          # 2. 发热优化：限制编译线程防止 Runner 崩溃，同时设定运行时的温控基准
           export DEX2OAT_THREADS=4 
           export ART_DEX2OAT_METHODS_FOR_COMPILATION=speed-profile
           
-          # 3. 运行环境调校：写入 build.prop 降低 Surface 运行时 JIT 负载
+          # 3. 写入运行时温控属性 (调高 JIT 门槛减少 Surface 背景发热)
           mkdir -p out/target/product/x86_64/system/
           {
-            echo "# ART Optimized for i1135G7"
-            echo "dalvik.vm.jitthreshold=5120"        # 提升 JIT 门槛，减少背景热量
-            echo "dalvik.vm.dex2oat-threads=2"        # 后台优化限制为双线程
+            echo "dalvik.vm.jitthreshold=5120"
+            echo "dalvik.vm.dex2oat-threads=2"
             echo "ro.dalvik.vm.native.bridge=libhoudini.so"
           } >> out/target/product/x86_64/system/build.prop
 
-          # --- 执行 ART 模块编译 ---
-          # Android 13 标准下，ART 是核心 Mainline 模块
-          echo "开始编译针对 i1135G7 优化的 ART APEX 模块..."
-          m com.android.art -j4
-
+          # 4. 执行 ART 模块编译
+          echo "开始编译针对 i1135G7 优化的 ART 模块..."
+          m com.android.art -j$(nproc)
       - name: 7. 整理并上传优化后的产物
         if: success()
         uses: actions/upload-artifact@v4
