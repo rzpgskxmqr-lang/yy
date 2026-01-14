@@ -116,13 +116,10 @@ jobs:
             git clone --depth=1 https://android.googlesource.com/platform/prebuilts/bazel/common prebuilts/bazel/common || true
             fi
              mkdir -p external/golang-protobuf
-          git clone --depth=1 android.googlesource.com external/golang-protobuf || true
           
           if [ ! -d "build/blueprint" ]; then
             git clone --depth=1 android.googlesource.com build/blueprint || true
           fi
-
-          source build/envsetup.sh
           export ALLOW_MISSING_DEPENDENCIES=true
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
              
