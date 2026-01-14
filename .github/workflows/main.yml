@@ -120,6 +120,12 @@ jobs:
           if [ ! -d "build/blueprint" ]; then
             git clone --depth=1 https://android.googlesource.com/platform/build/blueprint || true
           fi
+           if [ ! -f "build/envsetup.sh" ]; then
+              echo "补全核心环境脚本..."
+              [ -d "build/make" ] || git clone --depth=1 https://android.googlesource.com/platform/build/blueprint/make
+              mkdir -p build
+              ln -sf $(pwd)/build/make/envsetup.sh build/envsetup.sh
+          fi
 
             
           # 6. 最后确认清理
@@ -128,7 +134,8 @@ jobs:
             echo "正在删除 .repo 以释放约 150GB 空间完成打包..."
             rm -rf .repo
           fi
-           
+           set +u
+          source build/envsetup.sh
 
           
           export ALLOW_MISSING_DEPENDENCIES=true
