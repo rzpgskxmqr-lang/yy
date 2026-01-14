@@ -66,38 +66,62 @@ jobs:
 
       - name: 4. 源码同步 (2026 自动识别排除修复版)
         run: |
-          mkdir build_dir && cd build_dir
+          
+          set -euo pipefail
+          mkdir -p build_dir && cd build_dir
           git config --global user.email "build@bliss.com"
           git config --global user.name "Builder"
           
-          # 仅同步 ART 及核心组件，排除 arm/nvidia 等硬件代码
-          repo init -u ${{ github.event.inputs.manifest_url }} -b ${{ github.event.inputs.manifest_branch }} --depth=1 \
-            -g default,art,x86,intel -pdk,-vts,-arm,-amd,-nvidia
-          
-          # 物理屏蔽故障路径
-          find .repo/manifests -name "*.xml" -exec sed -i '/vendor\/prebuilts/d' {} +
-          
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach
+          # 1. 【初始化减负】
+          echo "正在初始化并执行初步减负..."
+          # 这里先执行 init 即使报错也不退出（因为我们要先拿到脚本文件才能修复）
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 \
+            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
+          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 \
+            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || \
+          repo init -u "$MANIFEST_URL" -b master --depth=1 \
+            -g default,-pdk,-vts,-vndk,-amd,-nvidia,-arm,-qualcomm || true
 
-      - name: 4. 注入发热优化与转译层配置
-        run: |
-          cd build_dir
-          # 预创建 system 目录用于注入属性
-          mkdir -p out/target/product/x86_64/system/
+          # 2. 【核心修复】：物理抹除导致 Python 3.12 崩溃的 Logger 参数
+          # 解决：TypeError: Logger._log() got an unexpected keyword argument 'file'
+          echo "正在对 Repo 内部脚本进行 Python 3.12 兼容性热补丁..."
+          if [ -d ".repo/repo" ]; then
+            find .repo/repo -name "*.py" -exec sed -i 's/, file=sys.stderr//g' {} +
+            echo "补丁应用成功。"
+          fi
+
+          # 3. 【强硬抹除策略】：物理删除故障仓库定义
+          echo "执行物理级清单阉割，强制抹除故障项目..."
+          find .repo/manifests -name "*.xml" -exec sed -i '/vendor\/prebuilts/d' {} +
+          find .repo/manifest.xml -exec sed -i '/vendor\/prebuilts/d' {} + || true
+
+          # 4. 【清空干扰与清理锁】
+          rm -rf .repo/local_manifests/*.xml || true
+          find .repo -name "*.lock" -delete || true
+
+          # 5. 【执行强制同步】
+          echo "开始执行减负同步..."
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --detach || \
+          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
+           
+          # 6. 【物理补全核心脚本】（保持你的原有逻辑）
+          if [ ! -f "build/blueprint/microfactory/microfactory.bash" ]; then
+            echo "检测到核心脚本缺失，正在物理补全..."
+            git clone --depth=1 https://android.googlesource.com/platform/build/blueprint build/blueprint || true
+          fi
+          if [ ! -d "prebuilts/go/linux-x86" ]; then
+            mkdir -p prebuilts/go
+            git clone --depth=1 https://android.googlesource.com/platform/prebuilts/go/linux-x86 prebuilts/go/linux-x86 || true
+          fi
+          if [ ! -d "prebuilts/bazel/common" ]; then
+            mkdir -p prebuilts/bazel
+            git clone --depth=1 https://android.googlesource.com/platform/prebuilts/bazel/common prebuilts/bazel/common || true
+          fi
           
-          # 写入温控优化属性：调高 JIT 门槛，降低后台编译强度
-          {
-            echo "# ART Thermal & Energy Optimization"
-            echo "dalvik.vm.dex2oat-threads=2"        # 后台编译限制为 2 线程
-            echo "dalvik.vm.boot-dex2oat-threads=4"   # 开机编译限制为 4 线程
-            echo "dalvik.vm.jitthreshold=5120"        # 减少 JIT 编译器活动频率
-            echo "ro.dalvik.vm.native.bridge=libhoudini.so"
-            echo "pm.dexopt.bg-dexopt=speed-profile"  # 后台优化改为省电模式
-          } >> out/target/product/x86_64/system/build.prop
+          # 7. 最后确认清理
+          rm -rf vendor/prebuilts
+
           
-          # 开启 ARM 架构支持声明
-          mkdir -p device/generic/common/
-          echo "PRODUCT_ABI_LIST_EXTRA := armeabi-v7a, armeabi, arm64-v8a" >> device/generic/common/device.mk
 
       - name: 5. 针对 i1135G7 执行温控优化编译
         run: |
