@@ -106,71 +106,69 @@ jobs:
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --detach
            
           # 6. 【物理补全核心脚本】（保持你的原有逻辑）
+                - name: 6. 针对 Surface i1135G7 执行 ART 专项编译 (物理修复版)
+           run: |
+          # 必须先进入同步好的目录
           cd build_dir
-
-          # --- [缺啥补啥] 物理补齐 Soong 报错的 Go 依赖，不改第 4 步 ---
-          echo "检测到 Soong 编译系统依赖缺失，正在定向物理补齐..."
           
-          # 补齐报错频率最高的 golang-protobuf (2026 编译核心)
+          echo "=== 正在执行缺啥补啥逻辑 ==="
+          # 物理补齐 Soong 报错的 Go 依赖，确保 lunch 正常解析
           if [ ! -d "external/golang-protobuf" ]; then
             git clone --depth=1 android.googlesource.com external/golang-protobuf || true
           fi
-
-          # 补齐 go 编译器（如果同步漏了它，lunch 绝对过不去）
-          if [ ! -d "prebuilts/go/linux-x86" ]; then
-            mkdir -p prebuilts/go
-            git clone --depth=1 android.googlesource.com prebuilts/go/linux-x86 || true
-          fi
-
-          # 补齐 blueprint (Soong 的核心构建逻辑)
+          
+          # 物理补齐 Blueprint (Soong 核心逻辑)
           if [ ! -d "build/blueprint" ]; then
             git clone --depth=1 android.googlesource.com build/blueprint || true
           fi
-          
-          # -------------------------------------------------------
 
+          echo "=== 初始化编译环境 ==="
           source build/envsetup.sh
           
-          # 注入 2026 核心容错变量：允许非核心依赖缺失，这对只编译 ART 模块至关重要
+          # 2026 核心变量：忽略非核心组件缺失
           export ALLOW_MISSING_DEPENDENCIES=true
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
 
-          echo "尝试三段式 Lunch (产品-发布版-变量)..."
-          # 适配 2026 规范：加入 trunk_staging 字段
+          echo "=== 执行三段式 Lunch 探测 ==="
+          # 针对 2026 规范尝试补全 trunk_staging 字段
           lunch bliss_x86_64-trunk_staging-userdebug || \
           lunch android_x86_64-trunk_staging-userdebug || \
           lunch bliss_x86_64-userdebug || {
-              echo "常规 Lunch 失败，探测可用组合..."
+              echo "常规 Lunch 失败，自动提取可用组合..."
               LUNCH_TARGET=$(lunch -l 2>&1 | grep "x86_64" | head -n 1 | awk '{print $1}')
               lunch "$LUNCH_TARGET"
           }
 
-          # --- i1135G7 Tiger Lake 专项调优与发热优化 ---
+          echo "=== 注入 i1135G7 Tiger Lake 优化参数 ==="
           export TARGET_CPU_VARIANT='tigerlake'
           export DEX2OAT_THREADS=4 
           export ART_DEX2OAT_METHODS_FOR_COMPILATION=speed-profile
           
-          # 运行时发热优化：调高 JIT 门槛，减少 Surface 运行时的背景功耗
+          # 运行时发热优化：调高 JIT 门槛
           mkdir -p out/target/product/x86_64/system/
-          {
-            echo "dalvik.vm.jitthreshold=5120"
-            echo "dalvik.vm.dex2oat-threads=2"
-            echo "ro.dalvik.vm.native.bridge=libhoudini.so"
-          } >> out/target/product/x86_64/system/build.prop
+          echo "dalvik.vm.jitthreshold=5120" >> out/target/product/x86_64/system/build.prop
 
-          echo "开始编译针对 i1135G7 优化的 ART APEX 模块..."
-          # 仅编译 com.android.art，极大节省资源并绕过全量系统的依赖深坑
+          echo "=== 开始编译 ART 模块 ==="
+          # 只编译核心 ART APEX，跳过臃肿的 ISO 打包过程
           m com.android.art -j4
-
-      - name: 7. 上传 ART 优化产物
+       - name: 7. 整理并上传针对 i1135G7 优化的产物
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ART-Optimized-i1135G7-APEX
+          name: ART-Optimized-TigerLake-APEX
+          # 2026 路径规范：搜寻 system 分区和 apex 目录下的所有相关模块
           path: |
             build_dir/out/target/product/x86_64/system/apex/com.android.art.apex
             build_dir/out/target/product/x86_64/apex/com.android.art.apex
+            build_dir/out/target/product/x86_64/system/build.prop
+          # 建议保留 7 天，方便调试
           retention-days: 7
-          
-          # 7. 最后确认清理
-          rm -rf vendor/prebuilts
+
+      - name: 8. 编译后磁盘空间检查与清理 (防止退出挂起)
+        if: always()
+        run: |
+          echo "正在清理编译中间文件以释放空间..."
+          # 只删除庞大的中间对象目录 (.obj)，保留生成的产物
+          rm -rf build_dir/out/target/product/x86_64/obj || true
+          df -h
+
