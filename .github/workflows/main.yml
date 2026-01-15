@@ -69,7 +69,7 @@ jobs:
           git config --global user.email "you@example.com"
           git config --global user.name "Your Name"
           mkdir bliss && cd bliss
-          repo init -u github.com -b r-x86-14.x # 使用这个分支来编译 Android 11
+          repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1 || \
           repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
 
       - name: 开始编译 ISO 镜像
