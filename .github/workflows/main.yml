@@ -142,11 +142,7 @@ jobs:
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
 
           
-      - name: 6. 针对 Surface i1135G7 执行专项优化编译
-        run: | 
-          # 1. 禁用 -u 以兼容 AOSP 脚本，仅保留 -e (出错即停)
-           set -e
-            source build/envsetup.sh
+      
           # 5. 【手动排除】：同步后物理删除特定的故障目录，绕过 XML 校验报错
           rm -rf vendor/prebuilts
       - name: 5. 释放磁盘空间 (针对 i1135G7 瘦身)
