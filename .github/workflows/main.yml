@@ -1,146 +1,78 @@
-name: Build BlissOS 17 (Surface i1135G7 2026-Final)
 
+name: Build Bliss OS for Surface Pro 8
 on:
-  workflow_dispatch:
-    inputs:
-      manifest_url:
-        description: '完整的 Manifest URL（示例：https://github.com/BlissRoms-x86/manifest.git）'
-        required: true
-        default: 'https://github.com/BlissRoms-x86/manifest.git'
-      manifest_branch:
-        description: '源码分支（优先使用 universe-x86）'
-        required: true
-        default: 'universe-x86'
-      prune_repo:
-        description: '清理 .repo 释放空间（必须填 true，否则磁盘不足）'
-        required: true
-        default: 'true'
+  workflow_dispatch: # 手动触发编译
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
-    env:
-      MANIFEST_URL: ${{ github.event.inputs.manifest_url }}
-      MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch }}
-      PRUNE_REPO: ${{ github.event.inputs.prune_repo }}
-
+    runs-on: ubuntu-22.04
     steps:
-      - name: 1. 验证输入合法性
-        run: |
-          set -euo pipefail
-          if ! [[ "$MANIFEST_URL" =~ ^https://.*\.git$ ]]; then
-            echo "错误：请填写完整的 HTTPS 仓库地址（示例：https://github.com/BlissRoms-x86/manifest.git）"
-            exit 1
-          fi
-
-      - name: 2. 极大化磁盘空间（清理冗余工具）
-        uses: jlumbroso/free-disk-space@main
+      # [1] 清理磁盘空间：这是在 GitHub 上编译 Android 的唯一机会
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
         with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          swap-storage: false
+          root-reserve-mb: 1024
+          temp-reserve-mb: 1024
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          swap-size-mb: 4096
 
-      - name: 3. 安装工具链与修复 Repo (2026 路径修正版)
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # [2] 安装 Android 编译必备工具链
+      - name: Install Build Dependencies
         run: |
-          set -euo pipefail
           sudo apt update
-          sudo apt install -y bc bison build-essential ccache curl flex g++-multilib \
-            gcc-multilib git git-lfs gnupg gperf lib32readline-dev lib32z1-dev \
-            libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
-            lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
-            python3-setuptools openjdk-17-jdk
+          sudo apt install -y git-core gnupg flex bison gperf build-essential zip curl zlib1g-dev \
+          libncurses5-dev libssl-dev libreadline-dev libgl1-mesa-dev g++-multilib \
+          x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
+          xsltproc unzip fontconfig python3 python-is-python3 bc liblz4-tool
 
-          mkdir -p "$HOME/bin"
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
-          
-          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
-            echo "Google 源不可用，切换至 GitHub Raw 原始脚本路径..."
-            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
-          fi
-          
-          chmod a+x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
-
-      - name: 4. 源码同步（2026 分支智能匹配）
+      # [3] 配置 Repo 工具
+      - name: Setup Repo
         run: |
-          set -euo pipefail
-          mkdir -p build_dir && cd build_dir
-          git config --global user.email "build@bliss.com"
-          git config --global user.name "Bliss Builder"
-          git config --global credential.helper store
-          
-          echo "尝试同步分支：$MANIFEST_BRANCH"
-          if ! repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1; then
-            echo "指定分支同步失败，尝试备用分支 universe-x86..."
-            if ! repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1; then
-              echo "universe-x86 分支失败，尝试 master 分支..."
-              repo init -u "$MANIFEST_URL" -b master --depth=1 || {
-                echo "所有分支同步失败，退出编译..."
-                exit 1
-              }
-            fi
-          fi
-          
-          repo sync -c -j$(($(nproc) * 2)) --force-sync --no-clone-bundle --no-tags --optimized-fetch
-          echo "源码同步完成，当前目录大小：$(du -sh . | awk '{print $1}')"
+          mkdir ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: 5. 释放磁盘空间（针对 i1135G7 瘦身）
+      # [4] 源码同步 (使用深度为 1 的浅克隆以节省空间)
+      - name: Repo Init and Sync
         run: |
-          set -euo pipefail
-          cd build_dir
-          
-          # 删除无关架构代码和冗余文件
-          rm -rf device/generic/amd* vendor/amd device/generic/arm* vendor/arm docs samples 2>/dev/null || true
-          
-          if [[ "$PRUNE_REPO" == "true" ]]; then
-            echo "正在删除 .repo 目录释放空间..."
-            rm -rf .repo && echo "空间释放完成，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
-          else
-            echo "警告：未启用空间清理，可能导致后续打包失败！"
-          fi
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+          mkdir bliss_source && cd bliss_source
+          # 使用 Bliss OS 15 (Android 12L) 针对 Surface Pro 8 的硬件支持更佳
+          repo init -u https://github.com/BlissOS/manifest.git -b r60 --depth=1
+          repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle
 
-      - name: 6. 针对 Surface i1135G7 执行专项优化编译
+      # [5] 针对 Surface Pro 8 注入优化参数
+      - name: Apply Surface Pro 8 Optimization & Build
         run: |
-          set -euo pipefail
-          cd build_dir
+          cd bliss_source
           
-          /bin/bash -c "source build/envsetup.sh && \
-          export TARGET_CPU_VARIANT='tigerlake' && \
-          export TARGET_CPU_ABI='x86_64' && \
-          export BOARD_GPU_DRIVERS='iris' && \
-          export TARGET_SURFACE=true && \
-          export BLISS_BUILD_VARIANT='gapps' && \
-          export BLISS_BUILD_TYPE='stable' && \
-          export BOARD_KERNEL_CMDLINE='${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive splash quiet' && \
-          export USE_CCACHE=1 && \
-          export CCACHE_EXEC=$(which ccache) && \
-          ccache -M 50G && \
-          lunch bliss_x86_64-userdebug && \
-          echo '开始编译，使用 $(nproc) 线程...' && \
-          mka iso_img -j$(nproc)"
+          # 核心优化参数注入
+          export TARGET_SURFACE_PATCHES=true
+          export BOARD_USES_INTEL_IPTS=true        # Surface 触控支持
+          export BOARD_USES_INTEL_ITH=true         # 较新 Surface 的传感器支持
+          export GALLIUM_DRIVERS=iris,swrast      # 为 Surface Pro 8 的 Iris Xe 显卡优化
+          
+          # 加载环境
+          . build/envsetup.sh
+          
+          # 选择编译目标
+          lunch bliss_x86_64-userdebug
+          
+          # 开始编译 ISO (使用 mka iso_img)
+          mka iso_img -j$(nproc --all)
 
-      - name: 7. 验证编译产物
-        if: success()
-        run: |
-          cd build_dir/out/target/product/x86_64
-          ls -lh *.iso || {
-            echo "编译产物不存在，编译失败！"
-            exit 1
-          }
-          echo "编译产物信息："
-          du -sh *.iso
-          md5sum *.iso > BlissOS-17-Surface-i1135G7-MD5.txt
-
-      - name: 8. 上传结果（ISO + MD5 校验文件）
-        if: success()
+      # [6] 上传编译生成的 ISO 镜像
+      - name: Upload ISO Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BlissOS-17-Surface-i1135G7-2026-Final
-          path: |
-            build_dir/out/target/product/x86_64/*.iso
-            build_dir/out/target/product/x86_64/*.txt
-          retention-days: 7
-          if-no-files-found: error
-
+          name: BlissOS-Surface-Pro-8-ISO
+          path: bliss_source/out/target/product/x86_64/*.iso
