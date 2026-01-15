@@ -6,11 +6,11 @@ on:
       manifest_url:
         description: '完整的 Manifest URL（示例：https://github.com/BlissRoms-x86/manifest.git）'
         required: true
-        default: 'https://github.com/BlissRoms-x86/manifest.git' # 修正：默认填完整示例地址
+        default: 'https://github.com/BlissRoms-x86/manifest.git'
       manifest_branch:
         description: '源码分支（优先使用 universe-x86）'
         required: true
-        default: 'universe-x86' # 核心修正：2026 年实际存在分支
+        default: 'universe-x86'
       prune_repo:
         description: '清理 .repo 释放空间（必须填 true，否则磁盘不足）'
         required: true
@@ -29,7 +29,6 @@ jobs:
       - name: 1. 验证输入合法性
         run: |
           set -euo pipefail
-          # 验证 Manifest URL 格式（必须包含 https:// 和 .git）
           if ! [[ "$MANIFEST_URL" =~ ^https://.*\.git$ ]]; then
             echo "错误：请填写完整的 HTTPS 仓库地址（示例：https://github.com/BlissRoms-x86/manifest.git）"
             exit 1
@@ -41,9 +40,107 @@ jobs:
           tool-cache: true
           android: true
           dotnet: true
-          swap-storage: false # 禁用交换分区，避免编译卡顿
+          swap-storage: false
 
-      - name: 3. 安装工具链与修复 Repo（2026 路径修正版）
+      - name: 3. 安装工具链与修复 Repo (2026 路径修正版)
         run: |
           set -euo pipefail
-          sudo apt update && sudo apt f
+          sudo apt update
+          sudo apt install -y bc bison build-essential ccache curl flex g++-multilib \
+            gcc-multilib git git-lfs gnupg gperf lib32readline-dev lib32z1-dev \
+            libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils \
+            lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
+            python3-setuptools openjdk-17-jdk
+
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
+          
+          if grep -q "<!DOCTYPE html>" "$HOME/bin/repo"; then
+            echo "Google 源不可用，切换至 GitHub Raw 原始脚本路径..."
+            curl -fsSL raw.githubusercontent.com > "$HOME/bin/repo"
+          fi
+          
+          chmod a+x "$HOME/bin/repo"
+          sudo ln -sf "$HOME/bin/repo" /usr/bin/repo || true
+
+      - name: 4. 源码同步（2026 分支智能匹配）
+        run: |
+          set -euo pipefail
+          mkdir -p build_dir && cd build_dir
+          git config --global user.email "build@bliss.com"
+          git config --global user.name "Bliss Builder"
+          git config --global credential.helper store
+          
+          echo "尝试同步分支：$MANIFEST_BRANCH"
+          if ! repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1; then
+            echo "指定分支同步失败，尝试备用分支 universe-x86..."
+            if ! repo init -u "$MANIFEST_URL" -b universe-x86 --depth=1; then
+              echo "universe-x86 分支失败，尝试 master 分支..."
+              repo init -u "$MANIFEST_URL" -b master --depth=1 || {
+                echo "所有分支同步失败，退出编译..."
+                exit 1
+              }
+            fi
+          fi
+          
+          repo sync -c -j$(($(nproc) * 2)) --force-sync --no-clone-bundle --no-tags --optimized-fetch
+          echo "源码同步完成，当前目录大小：$(du -sh . | awk '{print $1}')"
+
+      - name: 5. 释放磁盘空间（针对 i1135G7 瘦身）
+        run: |
+          set -euo pipefail
+          cd build_dir
+          
+          # 删除无关架构代码和冗余文件
+          rm -rf device/generic/amd* vendor/amd device/generic/arm* vendor/arm docs samples 2>/dev/null || true
+          
+          if [[ "$PRUNE_REPO" == "true" ]]; then
+            echo "正在删除 .repo 目录释放空间..."
+            rm -rf .repo && echo "空间释放完成，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
+          else
+            echo "警告：未启用空间清理，可能导致后续打包失败！"
+          fi
+
+      - name: 6. 针对 Surface i1135G7 执行专项优化编译
+        run: |
+          set -euo pipefail
+          cd build_dir
+          
+          /bin/bash -c "source build/envsetup.sh && \
+          export TARGET_CPU_VARIANT='tigerlake' && \
+          export TARGET_CPU_ABI='x86_64' && \
+          export BOARD_GPU_DRIVERS='iris' && \
+          export TARGET_SURFACE=true && \
+          export BLISS_BUILD_VARIANT='gapps' && \
+          export BLISS_BUILD_TYPE='stable' && \
+          export BOARD_KERNEL_CMDLINE='${BOARD_KERNEL_CMDLINE:-} i915.enable_psr=0 intel_pstate=passive splash quiet' && \
+          export USE_CCACHE=1 && \
+          export CCACHE_EXEC=$(which ccache) && \
+          ccache -M 50G && \
+          lunch bliss_x86_64-userdebug && \
+          echo '开始编译，使用 $(nproc) 线程...' && \
+          mka iso_img -j$(nproc)"
+
+      - name: 7. 验证编译产物
+        if: success()
+        run: |
+          cd build_dir/out/target/product/x86_64
+          ls -lh *.iso || {
+            echo "编译产物不存在，编译失败！"
+            exit 1
+          }
+          echo "编译产物信息："
+          du -sh *.iso
+          md5sum *.iso > BlissOS-17-Surface-i1135G7-MD5.txt
+
+      - name: 8. 上传结果（ISO + MD5 校验文件）
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlissOS-17-Surface-i1135G7-2026-Final
+          path: |
+            build_dir/out/target/product/x86_64/*.iso
+            build_dir/out/target/product/x86_64/*.txt
+          retention-days: 7
+          if-no-files-found: error
+
