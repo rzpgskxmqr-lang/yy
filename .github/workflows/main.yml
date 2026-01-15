@@ -40,15 +40,22 @@ jobs:
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      # [4] 源码同步 (使用深度为 1 的浅克隆以节省空间)
+      # [4] 源码同步 (深度优化版)
       - name: Repo Init and Sync
         run: |
+          # 1. 必须先配置 Git 身份，否则 repo 无法创建提交
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
+          
+          # 2. 核心修正：使用 https:// 而不是 git://，并确保 URL 正确
           mkdir bliss_source && cd bliss_source
-          # 使用 Bliss OS 15 (Android 12L) 针对 Surface Pro 8 的硬件支持更佳
-          repo init -u https://github.com/BlissOS/manifest.git -b r60 --depth=1
-          repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle
+          
+          # 添加 --no-clone-bundle 和 --depth=1 来规避网络认证超时和空间不足
+          repo init -u https://github.com/BlissOS/manifest.git -b r60 --depth=1 --no-clone-bundle
+          
+          # 3. 增加重试逻辑，防止 GitHub Actions 网络波动导致认证失败
+          repo sync -c -j$(nproc --all) --force-sync --no-tags --no-clone-bundle --optimized-fetch || \
+          repo sync -c -j1 --force-sync --no-tags --no-clone-bundle
 
       # [5] 针对 Surface Pro 8 注入优化参数
       - name: Apply Surface Pro 8 Optimization & Build
