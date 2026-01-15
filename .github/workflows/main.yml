@@ -1,85 +1,43 @@
-
-name: Build Bliss OS for Surface Pro 8
-on:
-  workflow_dispatch: # 手动触发编译
-
+name: Build Optimized ART for Surface Pro 8
+on: workflow_dispatch
 jobs:
-  build:
+  build-art:
     runs-on: ubuntu-22.04
     steps:
-      # [1] 清理磁盘空间：这是在 GitHub 上编译 Android 的唯一机会
-      - name: Maximize Build Space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 1024
-          temp-reserve-mb: 1024
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
-          swap-size-mb: 4096
-
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      # [2] 安装 Android 编译必备工具链
-      - name: Install Build Dependencies
+      - name: Free Disk Space
         run: |
-          sudo apt update
-          sudo apt install -y git-core gnupg flex bison gperf build-essential zip curl zlib1g-dev \
-          libncurses5-dev libssl-dev libreadline-dev libgl1-mesa-dev g++-multilib \
-          x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
-          xsltproc unzip fontconfig python3 python-is-python3 bc liblz4-tool
-
-      # [3] 配置 Repo 工具
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo docker image prune -a -f
       - name: Setup Repo
         run: |
           mkdir ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
-
-      # [4] 源码同步 (深度优化版)
-      - name: Repo Init and Sync
+      - name: Sync ART Source
         run: |
-          # 1. 必须先配置 Git 身份，否则 repo 无法创建提交
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
-          
-          # 2. 核心修正：使用 https:// 而不是 git://，并确保 URL 正确
-          mkdir bliss_source && cd bliss_source
-          
-          # 添加 --no-clone-bundle 和 --depth=1 来规避网络认证超时和空间不足
+          mkdir bliss_art && cd bliss_art
+          # 核心：只同步编译 ART 所需的必要项目 (使用 -c 和 --depth=1)
           repo init -u https://github.com/BlissOS/manifest.git -b r60 --depth=1 --no-clone-bundle
-          
-          # 3. 增加重试逻辑，防止 GitHub Actions 网络波动导致认证失败
-          repo sync -c -j$(nproc --all) --force-sync --no-tags --no-clone-bundle --optimized-fetch || \
-          repo sync -c -j1 --force-sync --no-tags --no-clone-bundle
-
-      # [5] 针对 Surface Pro 8 注入优化参数
-      - name: Apply Surface Pro 8 Optimization & Build
+          # 仅同步关键目录以节省空间
+          repo sync -c -j4 art bionic libcore libnativehelper build/make system/core --no-tags --no-clone-bundle
+      - name: Build ART with Surface Pro 8 (Tiger Lake) Optimizations
         run: |
-          cd bliss_source
-          
-          # 核心优化参数注入
-          export TARGET_SURFACE_PATCHES=true
-          export BOARD_USES_INTEL_IPTS=true        # Surface 触控支持
-          export BOARD_USES_INTEL_ITH=true         # 较新 Surface 的传感器支持
-          export GALLIUM_DRIVERS=iris,swrast      # 为 Surface Pro 8 的 Iris Xe 显卡优化
-          
-          # 加载环境
+          cd bliss_art
           . build/envsetup.sh
-          
-          # 选择编译目标
           lunch bliss_x86_64-userdebug
           
-          # 开始编译 ISO (使用 mka iso_img)
-          mka iso_img -j$(nproc --all)
-
-      # [6] 上传编译生成的 ISO 镜像
-      - name: Upload ISO Artifact
+          # 注入针对 Surface Pro 8 (Tiger Lake) 的编译器优化
+          export TARGET_CPU_VARIANT=tigerlake
+          export TARGET_ARCH_VARIANT=x86_64
+          
+          # 编译 ART 模块 (APEX)
+          m com.android.art
+          
+      - name: Upload ART Module
         uses: actions/upload-artifact@v4
         with:
-          name: BlissOS-Surface-Pro-8-ISO
-          path: bliss_source/out/target/product/x86_64/*.iso
+          name: ART-Module-Surface-Pro8
+          path: bliss_art/out/target/product/x86_64/system/apex/com.android.art.apex
