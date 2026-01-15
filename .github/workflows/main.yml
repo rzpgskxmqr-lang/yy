@@ -71,7 +71,7 @@ jobs:
            git config --global user.email "action@github.com"
            git config --global user.name "GitHub Action"
           mkdir bliss_art && cd bliss_art
-           repo init -u https://github.com/BlissOS/manifest.git -b r60 --depth=1 --no-clone-bundle
+           repo init -u https://github.com/BlissOS/platform_manifest.git -b r60 --depth=1 --no-clone-bundle
           repo sync -c -j4 art bionic libcore libnativehelper build/make system/core --no-tags --no-clone-bundle
           - name: Build ART with Surface Pro 8 (Tiger Lake) Optimizations
            cd build_dir
